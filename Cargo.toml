@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+# Shared package metadata. Crates opt in via `edition.workspace = true`, etc.
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+
+# Centralized dependency versions. Crates reference these with
+# `some-dep.workspace = true` so versions stay in sync across the workspace.
+[workspace.dependencies]
