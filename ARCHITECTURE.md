@@ -420,13 +420,18 @@ pub struct CommandSpec {
 pub struct CommandOutput { pub status: i32, pub stdout: Vec<u8>, pub stderr: Vec<u8> }
 ```
 
-Two implementations ship in the `platform` crate:
+Two families of implementation ship in the `platform` crate:
 
-- **`RealPlatform`** — std/rustix-backed. This is the *only* place with
-  `#[cfg(target_os = "macos")]` / `"linux"` branches (well-known dirs, statvfs details,
-  notification delivery: `osascript -e 'display notification …'` on macOS,
-  `notify-send` on Linux — silently downgraded to a log line if unavailable).
-  Command timeouts are enforced by spawn + wait-with-deadline + kill.
+- **`MacOsPlatform` / `LinuxPlatform`** — the std/rustix-backed production platforms, one
+  per file (`macos.rs`, `linux.rs`). All OS-agnostic logic (filesystem walking, sizing,
+  safe deletion, statvfs, subprocess handling) lives once in the private `sys` module and
+  is shared; each OS file implements only its genuinely divergent surface — well-known
+  dirs and notification delivery (`osascript -e 'display notification …'` on macOS,
+  `notify-send` on Linux, both downgraded to a log line if unavailable) — so *no method
+  body branches on `target_os`*. The `RealPlatform` type alias resolves to the right one
+  for the target OS (`MacOsPlatform` on macOS, `LinuxPlatform` elsewhere), so downstream
+  crates construct `RealPlatform::new()` and never see a `cfg`. Command timeouts are
+  enforced by spawn + wait-with-deadline + kill.
 - **`FakePlatform`** (behind a `test-util` feature) — an in-memory filesystem
   (`BTreeMap<PathBuf, FakeNode>` with contents/sizes/mtimes), a scripted command
   responder (match on program+args → canned output, or an error to simulate a dead

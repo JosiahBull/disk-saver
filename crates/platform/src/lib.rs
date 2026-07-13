@@ -5,27 +5,50 @@
 //! [`Platform`] trait, so every adapter is integration-testable against an
 //! in-memory fake.
 //!
-//! Two implementations ship here:
+//! Two families of implementation ship here:
 //!
-//! * [`RealPlatform`] — std/`rustix`-backed. The *only* place in the workspace
-//!   with `#[cfg(target_os = …)]` branches (well-known dirs, `statvfs`,
-//!   notification delivery).
+//! * The production platforms — [`MacOsPlatform`] and [`LinuxPlatform`], one per
+//!   file. All the OS-agnostic work (filesystem, sizing, deletion, `statvfs`,
+//!   subprocess) lives in the private `sys` module and is shared; each OS file
+//!   implements only its genuinely divergent surface (well-known directories and
+//!   notification delivery), so no method body branches on `target_os`. The
+//!   [`RealPlatform`] alias resolves to the right one for the target OS, letting
+//!   downstream crates stay OS-agnostic.
 //! * [`FakePlatform`] — an in-memory implementation behind the `test-util`
 //!   feature, with a fluent builder, recorders, an advanceable clock, scripted
 //!   commands, and a no-symlink-follow in-memory filesystem.
 //!
 //! Deletion goes through the [`Platform`] trait rather than `std::fs` because
-//! it is a safety chokepoint: [`RealPlatform`] refuses relative paths, never
-//! traverses symlinks, and logs every removal before performing it.
+//! it is a safety chokepoint: the real platforms refuse relative paths, never
+//! traverse symlinks, and log every removal before performing it.
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-mod real;
+mod sys;
 mod types;
 
-pub use real::RealPlatform;
+#[cfg(not(target_os = "macos"))]
+mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+
+#[cfg(not(target_os = "macos"))]
+pub use linux::LinuxPlatform;
+#[cfg(target_os = "macos")]
+pub use macos::MacOsPlatform;
+
+/// The concrete production [`Platform`] for the target OS: [`MacOsPlatform`] on
+/// macOS, [`LinuxPlatform`] elsewhere. Downstream crates construct
+/// `RealPlatform::new()` and stay OS-agnostic — the alias is the only place that
+/// picks the implementation.
+#[cfg(target_os = "macos")]
+pub type RealPlatform = MacOsPlatform;
+/// The concrete production [`Platform`] for the target OS (see the macOS docs).
+#[cfg(not(target_os = "macos"))]
+pub type RealPlatform = LinuxPlatform;
+
 pub use types::{
     CommandOutput, CommandSpec, DirEntry, DiskUsage, FileKind, FileMeta, Notification, Urgency,
 };

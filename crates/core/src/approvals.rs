@@ -209,6 +209,7 @@ impl<'a> Approvals<'a> {
     pub fn snooze(&self, key: &str, now: SystemTime, dur: Duration) {
         if let Ok(Some(mut item)) = self.bucket.get::<QueuedItem>(key) {
             item.state = ApprovalState::Snoozed;
+            // TODO @JO: the timestamps here seem a bit buggy/duplicated work.
             item.snooze_until_unix = Some(to_unix(now).saturating_add(dur.as_secs()));
             let _ = self.bucket.set(key, &item, now);
         }
