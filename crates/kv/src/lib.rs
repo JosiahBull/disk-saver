@@ -12,6 +12,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::time::SystemTime;
+
 use rusqlite::{Connection, OptionalExtension};
 
 /// Result type used throughout this crate.
@@ -119,12 +121,16 @@ impl<'a> Bucket<'a> {
     /// Serialise `value` to JSON and store it at `key`, overwriting any prior value.
     ///
     /// The `updated_at` bookkeeping column is set to the current unix time in seconds.
-    pub fn set<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<()> {
+    pub fn set<T: serde::Serialize>(&self, key: &str, value: &T, now: SystemTime) -> Result<()> {
+        let now: i64 = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
         let json = serde_json::to_string(value)?;
         self.store.conn.execute(
             "INSERT INTO kv (bucket, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(bucket, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-            (&self.name, key, &json, now_unix_secs()),
+            (&self.name, key, &json, now),
         )?;
         Ok(())
     }
@@ -186,16 +192,6 @@ impl<'a> Bucket<'a> {
     }
 }
 
-/// Current unix time in seconds, saturating to `0` before the epoch.
-///
-/// Used only for the `updated_at` bookkeeping column — never read back for logic.
-fn now_unix_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,7 +217,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let b = store.bucket("things");
         let w = widget(1, "hello");
-        b.set("k1", &w).unwrap();
+        b.set("k1", &w, SystemTime::now()).unwrap();
         let got: Option<Widget> = b.get("k1").unwrap();
         assert_eq!(got, Some(w));
     }
@@ -230,8 +226,9 @@ mod tests {
     fn round_trip_primitives_and_maps() {
         let store = Store::open_in_memory().unwrap();
         let b = store.bucket("prim");
-        b.set("count", &42u64).unwrap();
-        b.set("label", &"hi there".to_string()).unwrap();
+        b.set("count", &42u64, SystemTime::now()).unwrap();
+        b.set("label", &"hi there".to_string(), SystemTime::now())
+            .unwrap();
         assert_eq!(b.get::<u64>("count").unwrap(), Some(42));
         assert_eq!(b.get::<String>("label").unwrap(), Some("hi there".into()));
     }
@@ -248,7 +245,7 @@ mod tests {
     fn delete_removes_value() {
         let store = Store::open_in_memory().unwrap();
         let b = store.bucket("things");
-        b.set("k1", &widget(1, "x")).unwrap();
+        b.set("k1", &widget(1, "x"), SystemTime::now()).unwrap();
         assert!(b.get::<Widget>("k1").unwrap().is_some());
         b.delete("k1").unwrap();
         assert_eq!(b.get::<Widget>("k1").unwrap(), None);
@@ -266,8 +263,9 @@ mod tests {
     fn overwrite_updates_value() {
         let store = Store::open_in_memory().unwrap();
         let b = store.bucket("things");
-        b.set("k1", &widget(1, "first")).unwrap();
-        b.set("k1", &widget(2, "second")).unwrap();
+        b.set("k1", &widget(1, "first"), SystemTime::now()).unwrap();
+        b.set("k1", &widget(2, "second"), SystemTime::now())
+            .unwrap();
         let got: Option<Widget> = b.get("k1").unwrap();
         assert_eq!(got, Some(widget(2, "second")));
         // Overwriting must not create a duplicate row: exactly one key present.
@@ -279,8 +277,10 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let a = store.bucket("alpha");
         let z = store.bucket("zeta");
-        a.set("shared", &widget(1, "in-alpha")).unwrap();
-        z.set("shared", &widget(2, "in-zeta")).unwrap();
+        a.set("shared", &widget(1, "in-alpha"), SystemTime::now())
+            .unwrap();
+        z.set("shared", &widget(2, "in-zeta"), SystemTime::now())
+            .unwrap();
 
         assert_eq!(
             a.get::<Widget>("shared").unwrap(),
@@ -310,7 +310,7 @@ mod tests {
         let b = store.bucket("k");
         // Insert out of order to prove ordering is by query, not insertion.
         for key in ["image:c", "image:a", "container:z", "image:b", "other"] {
-            b.set(key, &1u8).unwrap();
+            b.set(key, &1u8, SystemTime::now()).unwrap();
         }
 
         // Prefix filter + ascending sort.
@@ -348,7 +348,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let b = store.bucket("k");
         for key in ["ab", "ac", "abc", "b"] {
-            b.set(key, &0u8).unwrap();
+            b.set(key, &0u8, SystemTime::now()).unwrap();
         }
         assert_eq!(
             b.keys("ab").unwrap(),
@@ -360,9 +360,12 @@ mod tests {
     fn iter_prefix_filtering_ordering_and_values() {
         let store = Store::open_in_memory().unwrap();
         let b = store.bucket("things");
-        b.set("image:b", &widget(2, "beta")).unwrap();
-        b.set("image:a", &widget(1, "alpha")).unwrap();
-        b.set("container:x", &widget(9, "ex")).unwrap();
+        b.set("image:b", &widget(2, "beta"), SystemTime::now())
+            .unwrap();
+        b.set("image:a", &widget(1, "alpha"), SystemTime::now())
+            .unwrap();
+        b.set("container:x", &widget(9, "ex"), SystemTime::now())
+            .unwrap();
 
         let got: Vec<(String, Widget)> = b.iter("image:").unwrap();
         assert_eq!(
@@ -392,7 +395,8 @@ mod tests {
     fn empty_string_key_is_usable() {
         let store = Store::open_in_memory().unwrap();
         let b = store.bucket("things");
-        b.set("", &widget(7, "empty-key")).unwrap();
+        b.set("", &widget(7, "empty-key"), SystemTime::now())
+            .unwrap();
         assert_eq!(b.get::<Widget>("").unwrap(), Some(widget(7, "empty-key")));
         assert_eq!(b.keys("").unwrap(), vec!["".to_string()]);
     }
@@ -401,7 +405,8 @@ mod tests {
     fn get_type_mismatch_is_json_error() {
         let store = Store::open_in_memory().unwrap();
         let b = store.bucket("things");
-        b.set("k", &"a string".to_string()).unwrap();
+        b.set("k", &"a string".to_string(), SystemTime::now())
+            .unwrap();
         // Stored a JSON string; deserialising as a struct must fail as a Json error.
         let err = b.get::<Widget>("k").unwrap_err();
         assert!(matches!(err, KvError::Json(_)));

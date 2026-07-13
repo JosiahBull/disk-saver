@@ -1,6 +1,8 @@
 //! Integration tests for the file-backed [`Store`]: data survives close/reopen and
 //! the on-disk schema/pragmas match `ARCHITECTURE.md` §6.
 
+use std::time::SystemTime;
+
 use disk_saver_kv::Store;
 use serde::{Deserialize, Serialize};
 
@@ -23,9 +25,13 @@ fn data_persists_across_reopen() {
     {
         let store = Store::open(&path).unwrap();
         let docker = store.bucket("docker");
-        docker.set("image:abc123", &entry).unwrap();
+        docker
+            .set("image:abc123", &entry, SystemTime::now())
+            .unwrap();
         let engine = store.bucket("_engine");
-        engine.set("last_full_run", &1_700_000_050u64).unwrap();
+        engine
+            .set("last_full_run", &1_700_000_050u64, SystemTime::now())
+            .unwrap();
     } // store dropped: connection closed, WAL checkpointed on close.
 
     // Reopen the same file — everything must still be there and isolated by bucket.
@@ -47,7 +53,7 @@ fn reopening_creates_missing_parent_is_not_required_but_file_is_created() {
     let path = dir.path().join("fresh.db");
     assert!(!path.exists());
     let store = Store::open(&path).unwrap();
-    store.bucket("b").set("k", &1u8).unwrap();
+    store.bucket("b").set("k", &1u8, SystemTime::now()).unwrap();
     assert!(path.exists(), "opening a store must create the db file");
 }
 
@@ -61,8 +67,8 @@ fn pragmas_and_schema_are_applied() {
     // depends on the schema: WITHOUT ROWID primary key means (bucket, key) is a
     // true upsert target. Prove overwrite semantics through the public API.
     let b = store.bucket("things");
-    b.set("k", &"one".to_string()).unwrap();
-    b.set("k", &"two".to_string()).unwrap();
+    b.set("k", &"one".to_string(), SystemTime::now()).unwrap();
+    b.set("k", &"two".to_string(), SystemTime::now()).unwrap();
     assert_eq!(b.get::<String>("k").unwrap(), Some("two".into()));
     assert_eq!(b.keys("").unwrap(), vec!["k".to_string()]);
 }
