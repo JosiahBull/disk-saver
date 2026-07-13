@@ -6,7 +6,43 @@ members = ["crates/*"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.85"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/josiahbull/disk-saver"
 
 # Centralized dependency versions. Crates reference these with
 # `some-dep.workspace = true` so versions stay in sync across the workspace.
 [workspace.dependencies]
+# ── internal crates ──
+disk-saver-core = { path = "crates/core" }
+disk-saver-kv = { path = "crates/kv" }
+disk-saver-platform = { path = "crates/platform" }
+disk-saver-scan = { path = "crates/scan" }
+disk-saver-adapter-docker = { path = "crates/adapter-docker" }
+disk-saver-adapter-node-modules = { path = "crates/adapter-node-modules" }
+disk-saver-adapter-rust-target = { path = "crates/adapter-rust-target" }
+disk-saver-adapter-python-cache = { path = "crates/adapter-python-cache" }
+disk-saver-adapter-trash = { path = "crates/adapter-trash" }
+
+# ── external ──
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+humantime = "2"
+humantime-serde = "1"
+bytesize = "1.3"
+rustix = { version = "0.38", features = ["fs"] }
+fd-lock = "4"
+globset = "0.4"
+
+# dev
+assert_cmd = "2"
+tempfile = "3"
+predicates = "3"

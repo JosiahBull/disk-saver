@@ -1,0 +1,31 @@
+[package]
+name = "disk-saver-core"
+description = "Adapter trait, engine, pressure model and config for disk-saver."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+disk-saver-kv.workspace = true
+disk-saver-platform.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+humantime.workspace = true
+humantime-serde.workspace = true
+bytesize.workspace = true
+globset.workspace = true
+
+[features]
+# When on, decisions are recorded to <state_dir>/decisions.jsonl and `why` works.
+# When off, DecisionLog is a ZST with inlined no-op methods (call sites unchanged).
+decision-log = []
+
+[dev-dependencies]
+disk-saver-platform = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true

@@ -1,0 +1,25 @@
+[package]
+name = "disk-saver-adapter-docker"
+description = "disk-saver adapter for docker containers, images and build cache."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+disk-saver-core.workspace = true
+disk-saver-platform.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+globset.workspace = true
+humantime.workspace = true
+humantime-serde.workspace = true
+
+[dev-dependencies]
+disk-saver-platform = { workspace = true, features = ["test-util"] }
+disk-saver-kv.workspace = true

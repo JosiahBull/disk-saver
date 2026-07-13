@@ -1,0 +1,48 @@
+[package]
+name = "disk-saver"
+description = "A small, boring, trustworthy disk janitor for macOS and Linux."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "disk-saver"
+path = "src/main.rs"
+
+[dependencies]
+disk-saver-core.workspace = true
+disk-saver-kv.workspace = true
+disk-saver-platform.workspace = true
+
+disk-saver-adapter-docker = { workspace = true, optional = true }
+disk-saver-adapter-node-modules = { workspace = true, optional = true }
+disk-saver-adapter-rust-target = { workspace = true, optional = true }
+disk-saver-adapter-python-cache = { workspace = true, optional = true }
+disk-saver-adapter-trash = { workspace = true, optional = true }
+
+clap.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+bytesize.workspace = true
+humantime.workspace = true
+
+[features]
+default = ["docker", "node-modules", "rust-target", "python-cache", "trash", "decision-log"]
+docker = ["dep:disk-saver-adapter-docker"]
+node-modules = ["dep:disk-saver-adapter-node-modules"]
+rust-target = ["dep:disk-saver-adapter-rust-target"]
+python-cache = ["dep:disk-saver-adapter-python-cache"]
+trash = ["dep:disk-saver-adapter-trash"]
+decision-log = ["disk-saver-core/decision-log"]
+
+[dev-dependencies]
+assert_cmd.workspace = true
+tempfile.workspace = true
+predicates.workspace = true

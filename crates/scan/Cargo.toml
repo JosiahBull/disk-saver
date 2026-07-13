@@ -1,0 +1,16 @@
+[package]
+name = "disk-saver-scan"
+description = "Shared project/artifact-dir walker for filesystem adapters."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+disk-saver-platform.workspace = true
+globset.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+disk-saver-platform = { workspace = true, features = ["test-util"] }
