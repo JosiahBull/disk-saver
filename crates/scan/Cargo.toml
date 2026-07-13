@@ -10,7 +10,10 @@ repository.workspace = true
 [dependencies]
 disk-saver-platform.workspace = true
 globset.workspace = true
+humantime-serde.workspace = true
+serde = { workspace = true }
 tracing.workspace = true
 
 [dev-dependencies]
 disk-saver-platform = { workspace = true, features = ["test-util"] }
+toml = { workspace = true }

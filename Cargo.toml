@@ -46,3 +46,19 @@ globset = "0.4"
 assert_cmd = "2"
 tempfile = "3"
 predicates = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Debug profile for release builds, with debug info + assertions, but still optimized.
+# Keeps panic handling etc. Optimisations are still present (the 'release' in release-debug).
+[profile.release-debug]
+inherits = "release"
+debug = true
+debug-assertions = true
+panic = "unwind"
+strip = false
