@@ -19,3 +19,4 @@ rustix = { workspace = true }
 test-util = []
 
 [dev-dependencies]
+tempfile.workspace = true

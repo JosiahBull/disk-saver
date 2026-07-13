@@ -349,6 +349,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
 ]
 
@@ -357,6 +358,7 @@ name = "disk-saver-platform"
 version = "0.1.0"
 dependencies = [
  "rustix 0.38.44",
+ "tempfile",
  "thiserror",
  "tracing",
 ]
