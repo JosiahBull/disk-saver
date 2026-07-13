@@ -1,0 +1,1 @@
+{"Command":"\"/entrypoint\"","CreatedAt":"2024-01-01 10:00:00 +0000 UTC","ID":"cworkercontainerid","Image":"app:old","Names":"worker","State":"exited","Status":"Exited (0) 3 weeks ago","Size":"12MB (virtual 200MB)"}

@@ -1,0 +1,4 @@
+{"ID":"sha256:appoldimageid","Repository":"app","Tag":"old","Size":"200MB"}
+{"ID":"sha256:libcacheimgid","Repository":"lib","Tag":"cache","Size":"120MB"}
+{"ID":"sha256:danglingimgid","Repository":"<none>","Tag":"<none>","Size":"55MB"}
+{"ID":"sha256:postgres15img","Repository":"postgres","Tag":"15","Size":"400MB"}

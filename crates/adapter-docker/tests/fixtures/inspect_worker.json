@@ -1,0 +1,1 @@
+[{"Id":"cworkercontainerid","Image":"sha256:appoldimageid","State":{"Status":"exited","Running":false,"Paused":false,"ExitCode":0,"StartedAt":"1971-01-10T00:00:00Z","FinishedAt":"1971-01-16T00:00:00Z"}}]
