@@ -24,8 +24,12 @@ jobs:
       - run: cargo fmt --all --check
 
   clippy:
-    name: clippy
-    runs-on: ubuntu-latest
+    name: clippy (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -35,10 +39,33 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
-    name: test
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-features
+
+  # Guards the compiled-out paths (cargo features) so they cannot rot: the
+  # `decision-log`-off ZST path in core, and the CLI with adapters trimmed.
+  features:
+    name: feature matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Leanest possible build: no adapters, no decision-log.
+      - run: cargo build --workspace --no-default-features
+      - run: cargo clippy -p disk-saver --no-default-features --all-targets -- -D warnings
+      # decision-log compiled OUT of core.
+      - run: cargo test -p disk-saver-core --no-default-features
+      # All adapters, decision-log OFF (exercises the compiled-out `why` path).
+      - run: cargo test -p disk-saver --no-default-features --features docker,node-modules,rust-target,python-cache,trash
