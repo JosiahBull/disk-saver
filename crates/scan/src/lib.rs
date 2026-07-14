@@ -395,6 +395,69 @@ impl FsConfig {
         }
         builder.build()
     }
+
+    /// Resolve this config into the concrete `(roots, ScanOptions)` for a walk:
+    /// `~`-expand each root against the platform home, drop any root at or under
+    /// the built-in [`denylist`](FsConfig::denylist), and build the exclude set
+    /// from the user globs *plus* the denylist (glob-escaped, so paths with
+    /// metacharacters still match). Shared by every roots-based adapter so the
+    /// denylist and escaping stay consistent.
+    pub fn resolve_walk(
+        &self,
+        platform: &dyn Platform,
+    ) -> Result<(Vec<PathBuf>, ScanOptions), globset::Error> {
+        let home = platform.home_dir();
+        let denylist = Self::denylist(platform);
+        let roots: Vec<PathBuf> = self
+            .roots
+            .iter()
+            .map(|r| expand_tilde(r, &home))
+            .filter(|r| !denylist.iter().any(|d| r == d || r.starts_with(d)))
+            .collect();
+
+        let mut builder = globset::GlobSetBuilder::new();
+        for pattern in &self.exclude {
+            builder.add(globset::Glob::new(pattern)?);
+        }
+        for dir in &denylist {
+            let base = globset::escape(&dir.to_string_lossy());
+            builder.add(globset::Glob::new(&base)?);
+            builder.add(globset::Glob::new(&format!("{base}/**"))?);
+        }
+        let exclude = builder.build()?;
+        Ok((
+            roots,
+            ScanOptions {
+                max_depth: self.max_depth,
+                exclude,
+            },
+        ))
+    }
+
+    /// The built-in denylist: directories a scan must never enter even when a
+    /// root (e.g. the default `~`) contains them — the OS/user data areas that
+    /// hold no reclaimable dev artifacts. `~/Library`, `~/.Trash`, and the user
+    /// cache dir.
+    pub fn denylist(platform: &dyn Platform) -> Vec<PathBuf> {
+        let home = platform.home_dir();
+        vec![
+            home.join("Library"),
+            home.join(".Trash"),
+            platform.user_cache_dir(),
+        ]
+    }
+}
+
+/// Expand a leading `~` component of `path` against `home` (scan keeps its own
+/// copy to avoid depending on `disk-saver-core`).
+fn expand_tilde(path: &Path, home: &Path) -> PathBuf {
+    let mut comps = path.components();
+    if let Some(std::path::Component::Normal(first)) = comps.next()
+        && first == "~"
+    {
+        return home.join(comps.as_path());
+    }
+    path.to_path_buf()
 }
 
 #[cfg(test)]

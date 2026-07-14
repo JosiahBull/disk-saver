@@ -109,6 +109,8 @@ accept absolute sizes (`"40GB"`) or percentages (`"10%"`); durations use `"7d"`/
 | `pnpm` | global pnpm store (via `pnpm store path`) + metadata cache | Cache |
 | `cargo-registry` | `~/.cargo` registry cache/src + git db/checkouts (index kept) | Cache |
 | `pip` | pip download/wheel cache under the platform cache dir | Cache |
+| `git-gc` | runs `git gc` on idle repos to shrink `.git` (non-destructive) | Rebuildable |
+| `git-ignored` | git-ignored objects in repos (build dirs, logs, …); protects `*env*` | UserData (confirm by default) |
 | `trash` | OS recycle bin (XDG on Linux, `~/.Trash` on macOS) | UserData (confirm by default) |
 
 The three global-cache adapters (`pnpm`, `cargo-registry`, `pip`) prune a whole cache directory

@@ -1131,11 +1131,16 @@ Each lands green and independently reviewable:
 
 ## 21. Future adapter ideas
 
-Three global-cache adapters have since shipped (`pnpm`, `cargo-registry`, `pip`), built on a
-shared `disk-saver-cachedir` engine — a well-known cache directory treated as one coarse
-`Class::Cache` candidate, aged by its most recent activity and removed wholesale past policy,
-with a `paths` config knob for non-standard locations. The same engine makes the remaining
-cache-dir ideas below cheap to add.
+Several adapters have since shipped beyond the v1 set:
+- Global caches `pnpm`, `cargo-registry`, `pip`, built on a shared `disk-saver-cachedir` engine —
+  a well-known cache directory treated as one coarse `Class::Cache` candidate, aged by its most
+  recent activity and removed wholesale past policy, with a `paths` config knob for non-standard
+  locations. The same engine makes the remaining cache-dir ideas below cheap to add.
+- `git-gc` (`Class::Rebuildable`) runs `git gc` on idle repos to shrink `.git` non-destructively,
+  reporting the bytes reclaimed; and `git-ignored` (`Class::UserData`, `confirm = true`) removes
+  git-ignored objects (`git clean -Xdn`) via the approvals queue, protecting `*env*` names by
+  default. Both discover repos through `disk-saver-scan` (a `.git` rule) and share the fs-adapter
+  root/denylist resolution (`FsConfig::resolve_walk`).
 
 The trait makes these cheap to add later, in rough priority order: Homebrew
 (`brew cleanup` + cache), Xcode `DerivedData`, npm/yarn global stores, sccache, `uv`

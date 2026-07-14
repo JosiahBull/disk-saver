@@ -21,12 +21,16 @@ pub fn registry() -> Vec<AdapterFactory> {
         disk_saver_adapter_rust_target::factory(),
         #[cfg(feature = "python-cache")]
         disk_saver_adapter_python_cache::factory(),
+        #[cfg(feature = "git-gc")]
+        disk_saver_adapter_git_gc::factory(),
         #[cfg(feature = "pnpm")]
         disk_saver_adapter_pnpm::factory(),
         #[cfg(feature = "cargo-registry")]
         disk_saver_adapter_cargo_registry::factory(),
         #[cfg(feature = "pip")]
         disk_saver_adapter_pip::factory(),
+        #[cfg(feature = "git-ignored")]
+        disk_saver_adapter_git_ignored::factory(),
         #[cfg(feature = "trash")]
         disk_saver_adapter_trash::factory(),
     ]

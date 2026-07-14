@@ -225,6 +225,8 @@ dependencies = [
  "clap",
  "disk-saver-adapter-cargo-registry",
  "disk-saver-adapter-docker",
+ "disk-saver-adapter-git-gc",
+ "disk-saver-adapter-git-ignored",
  "disk-saver-adapter-node-modules",
  "disk-saver-adapter-pip",
  "disk-saver-adapter-pnpm",
@@ -271,6 +273,36 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "disk-saver-adapter-git-gc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "disk-saver-core",
+ "disk-saver-kv",
+ "disk-saver-platform",
+ "disk-saver-scan",
+ "serde",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "disk-saver-adapter-git-ignored"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "disk-saver-core",
+ "disk-saver-kv",
+ "disk-saver-platform",
+ "disk-saver-scan",
+ "globset",
+ "humantime-serde",
+ "serde",
  "toml",
  "tracing",
 ]

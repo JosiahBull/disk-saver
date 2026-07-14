@@ -11,15 +11,19 @@
 
 use std::path::PathBuf;
 
-use disk_saver_cachedir::{CacheConfig, CacheDirAdapter};
+use disk_saver_cachedir::{CacheConfig, CacheDirAdapter, os_cache_dirs};
 use disk_saver_core::{Adapter, AdapterFactory, ConfigError, Platform, parse_adapter_config};
 
 /// The adapter's stable name (config section, KV bucket, log target).
 const NAME: &str = "pip";
 
-/// pip's default cache directory, under the platform cache dir.
+/// pip's cache directory. Derived from `home` and tried for every OS layout
+/// (`~/Library/Caches/pip`, `~/.cache/pip`), plus the platform cache dir so an
+/// `$XDG_CACHE_HOME` override is still honored. Non-existent ones are skipped.
 fn resolver(p: &dyn Platform) -> Vec<PathBuf> {
-    vec![p.user_cache_dir().join("pip")]
+    let mut dirs = os_cache_dirs(&p.home_dir(), "pip");
+    dirs.push(p.user_cache_dir().join("pip"));
+    dirs
 }
 
 /// The factory the CLI registry uses to build the pip adapter.

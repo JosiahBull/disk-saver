@@ -32,6 +32,18 @@ use serde::Deserialize;
 /// (often just an empty list), never panic.
 pub type Resolver = fn(&dyn Platform) -> Vec<PathBuf>;
 
+/// Candidate cache directories for `tool` across every supported OS, derived
+/// purely from `home` — the macOS (`~/Library/Caches/<tool>`) and Linux/XDG
+/// (`~/.cache/<tool>`) layouts. A resolver returns *all* of them and lets `plan`
+/// filter to the ones that actually exist, so an adapter finds the cache
+/// regardless of which OS created it (and without depending on the running OS).
+pub fn os_cache_dirs(home: &Path, tool: &str) -> Vec<PathBuf> {
+    vec![
+        home.join("Library").join("Caches").join(tool),
+        home.join(".cache").join(tool),
+    ]
+}
+
 /// The `[adapters.<name>]` config shared by every cache-directory adapter.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -134,7 +146,14 @@ impl Adapter for CacheDirAdapter {
     fn plan(&mut self, ctx: &mut Ctx) -> Result<Vec<Candidate>, AdapterError> {
         let now = ctx.now();
         let mut candidates = Vec::new();
+        // Accepted candidate dirs, so we can drop any resolved dir nested under
+        // one already accepted (removing the ancestor covers it). `target_dirs`
+        // is sorted, so ancestors are considered before their descendants.
+        let mut accepted: Vec<PathBuf> = Vec::new();
         for dir in self.target_dirs(ctx.platform) {
+            if accepted.iter().any(|a| dir.starts_with(a)) {
+                continue; // covered by an ancestor already being pruned
+            }
             // Only real directories (never follow a symlink to somewhere else).
             let meta = match ctx.platform.metadata(&dir) {
                 Ok(m) if m.kind == disk_saver_core::FileKind::Dir => m,
@@ -144,6 +163,7 @@ impl Adapter for CacheDirAdapter {
             if size == 0 {
                 continue; // nothing to reclaim
             }
+            accepted.push(dir.clone());
             let last_used = last_activity(ctx.platform, &dir, meta.modified);
             let age = now.duration_since(last_used).unwrap_or_default();
             let id = dir.to_string_lossy().into_owned();
@@ -324,6 +344,25 @@ mod tests {
         assert!(matches!(&out[0], Outcome::Removed { bytes, .. } if *bytes == 4096));
         assert!(!fake.exists("~/.cache/tool"));
         assert!(fake.removed().iter().any(|p| p.ends_with(".cache/tool")));
+    }
+
+    #[test]
+    fn nested_targets_collapse_to_the_ancestor() {
+        // A resolver returning both a parent and a child dir must yield a single
+        // candidate (the ancestor); removing it covers the child.
+        fn nested(p: &dyn Platform) -> Vec<PathBuf> {
+            let home = p.home_dir();
+            vec![home.join(".store/v3"), home.join(".store")]
+        }
+        let fake = FakePlatform::new().with_now(t(400)).with_file(
+            "~/.store/v3/aa/pkg",
+            vec![0u8; 4096],
+            t(300),
+        );
+        let mut a = CacheDirAdapter::new("tool", nested, CacheConfig::default()).unwrap();
+        let plan = ctx_run(&fake, Pressure::Normal, |ctx| a.plan(ctx).unwrap());
+        assert_eq!(plan.len(), 1, "nested dir collapses into its ancestor");
+        assert!(plan[0].id.ends_with(".store"));
     }
 
     #[test]

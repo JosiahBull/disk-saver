@@ -24,6 +24,8 @@ disk-saver-adapter-trash = { workspace = true, optional = true }
 disk-saver-adapter-pnpm = { workspace = true, optional = true }
 disk-saver-adapter-cargo-registry = { workspace = true, optional = true }
 disk-saver-adapter-pip = { workspace = true, optional = true }
+disk-saver-adapter-git-gc = { workspace = true, optional = true }
+disk-saver-adapter-git-ignored = { workspace = true, optional = true }
 
 clap.workspace = true
 anyhow.workspace = true
@@ -47,6 +49,8 @@ default = [
     "pnpm",
     "cargo-registry",
     "pip",
+    "git-gc",
+    "git-ignored",
     "decision-log",
 ]
 docker = ["dep:disk-saver-adapter-docker"]
@@ -57,6 +61,8 @@ trash = ["dep:disk-saver-adapter-trash"]
 pnpm = ["dep:disk-saver-adapter-pnpm"]
 cargo-registry = ["dep:disk-saver-adapter-cargo-registry"]
 pip = ["dep:disk-saver-adapter-pip"]
+git-gc = ["dep:disk-saver-adapter-git-gc"]
+git-ignored = ["dep:disk-saver-adapter-git-ignored"]
 decision-log = ["disk-saver-core/decision-log"]
 
 [dev-dependencies]

@@ -23,6 +23,8 @@ disk-saver-adapter-docker = { path = "crates/adapter-docker" }
 disk-saver-adapter-pnpm = { path = "crates/adapter-pnpm" }
 disk-saver-adapter-cargo-registry = { path = "crates/adapter-cargo-registry" }
 disk-saver-adapter-pip = { path = "crates/adapter-pip" }
+disk-saver-adapter-git-gc = { path = "crates/adapter-git-gc" }
+disk-saver-adapter-git-ignored = { path = "crates/adapter-git-ignored" }
 disk-saver-adapter-node-modules = { path = "crates/adapter-node-modules" }
 disk-saver-adapter-rust-target = { path = "crates/adapter-rust-target" }
 disk-saver-adapter-python-cache = { path = "crates/adapter-python-cache" }

@@ -484,6 +484,19 @@ min_age = "7d"
 max_age = "30d"       # pip's download/wheel cache under the platform cache dir
 min_age = "7d"
 
+[adapters.git-gc]
+roots      = ["~/dev"]  # run `git gc` on idle repos to shrink .git (non-destructive)
+max_age    = "30d"
+min_age    = "7d"
+aggressive = false      # pass --aggressive (slower, sometimes smaller)
+
+[adapters.git-ignored]
+roots   = ["~/dev"]     # remove git-ignored objects (build dirs, logs, …)
+max_age = "30d"
+min_age = "7d"
+confirm = true          # UserData: queues for `disk-saver review`, never auto-deletes
+protect = ["*env*"]     # never touch entries whose name matches these (e.g. .env, venv)
+
 [adapters.trash]
 max_age = "60d"
 min_age = "7d"

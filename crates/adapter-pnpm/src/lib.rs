@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 
-use disk_saver_cachedir::{CacheConfig, CacheDirAdapter};
+use disk_saver_cachedir::{CacheConfig, CacheDirAdapter, os_cache_dirs};
 use disk_saver_core::{
     Adapter, AdapterFactory, CommandSpec, ConfigError, Platform, parse_adapter_config,
 };
@@ -24,12 +24,24 @@ use disk_saver_core::{
 /// The adapter's stable name (config section, KV bucket, log target).
 const NAME: &str = "pnpm";
 
-/// Resolve the pnpm directories to prune: the metadata cache (`<cache>/pnpm`)
-/// and the content-addressable store (located via `pnpm store path`).
+/// Resolve the pnpm directories to prune, all derived from `home` and tried for
+/// every OS (non-existent ones are skipped):
+/// * the metadata cache (`~/Library/Caches/pnpm`, `~/.cache/pnpm`, plus the
+///   platform cache dir for an `$XDG_CACHE_HOME` override), and
+/// * the content-addressable store — the `store` subdirectory of pnpm's data
+///   locations (never the parent, which can hold the pnpm binary itself), and,
+///   authoritatively, whatever `pnpm store path` reports when pnpm is installed.
 fn resolver(p: &dyn Platform) -> Vec<PathBuf> {
-    let mut dirs = vec![p.user_cache_dir().join("pnpm")];
-    // `pnpm store path` prints the absolute store directory. Best-effort: if
-    // pnpm is missing or errors, we simply skip the store.
+    let home = p.home_dir();
+    let mut dirs = os_cache_dirs(&home, "pnpm");
+    dirs.push(p.user_cache_dir().join("pnpm"));
+    // Store locations (the `store` subdir only — safe; the pnpm binary lives in
+    // the parent data dir, not under `store`).
+    dirs.push(home.join(".local").join("share").join("pnpm").join("store"));
+    dirs.push(home.join("Library").join("pnpm").join("store"));
+    dirs.push(home.join(".pnpm-store"));
+    // Authoritative store path when pnpm is installed. Best-effort: on any
+    // failure we fall back to the candidates above.
     let spec = CommandSpec::new("pnpm", ["store", "path"]);
     if let Ok(out) = p.run_command(&spec)
         && out.success()

@@ -1,0 +1,21 @@
+[package]
+name = "disk-saver-adapter-git-gc"
+description = "disk-saver adapter that optimises idle git repositories with git gc to reclaim space."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+disk-saver-core.workspace = true
+disk-saver-platform.workspace = true
+disk-saver-scan.workspace = true
+serde.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+disk-saver-platform = { workspace = true, features = ["test-util"] }
+disk-saver-kv.workspace = true
