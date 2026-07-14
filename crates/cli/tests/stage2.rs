@@ -165,6 +165,9 @@ fn status_json_emits_the_expected_fields() {
         .stdout(predicate::str::contains("\"state\":"))
         .stdout(predicate::str::contains("\"thresholds\":"))
         .stdout(predicate::str::contains("\"pending_approvals\": 1"))
+        .stdout(predicate::str::contains("\"state_db_path\":"))
+        .stdout(predicate::str::contains("state.db"))
+        .stdout(predicate::str::contains("\"state_db_bytes\":"))
         .stdout(predicate::str::contains("\"recent_runs\":"));
 }
 

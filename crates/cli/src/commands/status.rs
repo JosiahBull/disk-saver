@@ -6,6 +6,7 @@
 //! cadence, counts the pending approvals queue, and renders the most recent run
 //! reports from the `_engine` KV ring buffer.
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -83,6 +84,10 @@ struct StatusJson {
     pending_approvals: usize,
     /// Total estimated bytes of pending approvals.
     pending_bytes: u64,
+    /// Absolute path of the sqlite state database.
+    state_db_path: String,
+    /// On-disk footprint of the state database (incl. WAL sidecars), in bytes.
+    state_db_bytes: u64,
     /// The most recent run summaries, newest first.
     recent_runs: Vec<RunSummary>,
 }
@@ -136,6 +141,21 @@ fn recent_reports(store: &disk_saver_core::Store) -> Vec<RunReport> {
     reports
 }
 
+/// On-disk footprint of the sqlite database at `db`: the main file plus its
+/// WAL/shm sidecars (which can dominate under WAL mode), so the figure reflects
+/// real space used. Missing files count as `0`.
+fn state_db_footprint(db: &Path) -> u64 {
+    let mut total = std::fs::metadata(db).map(|m| m.len()).unwrap_or(0);
+    for suffix in ["-wal", "-shm"] {
+        let mut side = db.as_os_str().to_owned();
+        side.push(suffix);
+        total += std::fs::metadata(PathBuf::from(side))
+            .map(|m| m.len())
+            .unwrap_or(0);
+    }
+    total
+}
+
 /// Render a timestamp (unix seconds) as an RFC-3339 string.
 fn stamp(at_unix: u64) -> String {
     humantime::format_rfc3339_seconds(UNIX_EPOCH + Duration::from_secs(at_unix)).to_string()
@@ -153,6 +173,8 @@ pub fn run(app: &App) -> Result<u8> {
     let below_warn = free < g.warn_below.bytes(total);
 
     let store = app.open_store()?;
+    let state_db_path = app.state_dir.join("state.db");
+    let state_db_bytes = state_db_footprint(&state_db_path);
     let approvals = Approvals::open(&store);
     let now = app.platform.now();
     let pending_approvals = approvals.pending(now).len();
@@ -205,6 +227,8 @@ pub fn run(app: &App) -> Result<u8> {
             last_full_run_unix,
             pending_approvals,
             pending_bytes,
+            state_db_path: state_db_path.display().to_string(),
+            state_db_bytes,
             recent_runs: recent,
         };
         output::print_json(&payload)?;
@@ -224,6 +248,8 @@ pub fn run(app: &App) -> Result<u8> {
             next_run_in_secs,
             pending_approvals,
             pending_bytes,
+            state_db_path: &state_db_path,
+            state_db_bytes,
             recent: &recent,
         },
     );
@@ -242,6 +268,8 @@ struct RenderCtx<'a> {
     next_run_in_secs: Option<u64>,
     pending_approvals: usize,
     pending_bytes: u64,
+    state_db_path: &'a Path,
+    state_db_bytes: u64,
     recent: &'a [RunSummary],
 }
 
@@ -288,6 +316,12 @@ fn render_human(app: &App, c: &RenderCtx<'_>) {
             output::bytes(c.pending_bytes),
         );
     }
+
+    println!(
+        "state db: {} ({})",
+        c.state_db_path.display(),
+        output::bytes(c.state_db_bytes),
+    );
 
     if c.recent.is_empty() {
         println!("recent runs: none recorded yet");
