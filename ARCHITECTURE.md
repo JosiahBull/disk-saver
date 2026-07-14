@@ -146,6 +146,12 @@ crates/
   adapter-trash/           package: disk-saver-adapter-trash
 ```
 
+(Later additions, same shapes: `cachedir/` backs the `pnpm`/`cargo-registry`/`pip`
+cache adapters; `adapter-git-gc/` and `adapter-git-ignored/` are git-repo adapters; and
+`installer/` — package `disk-saver-installer` — is a standalone interactive TUI installer,
+excluded from `default-members` and the *only* crate pulling `ratatui`, so the shipped
+`disk-saver` binary stays TUI-free.)
+
 Dependency graph (arrows = "depends on"):
 
 ```
@@ -1021,7 +1027,9 @@ Kept deliberately lean; all versions pinned once in `[workspace.dependencies]`:
 
 Notably absent: no async runtime (§18), no `chrono` (std `SystemTime` + humantime
 suffice), no `sysinfo` (statvfs is 20 lines), no notification crate (osascript/
-notify-send via `run_command` machinery), no TUI crate (`review` is plain stdin prompts).
+notify-send via `run_command` machinery), no TUI crate in the shipped binary (`review` is
+plain stdin prompts; the separate, on-demand `disk-saver-installer` is the only thing that
+depends on `ratatui`).
 
 ---
 

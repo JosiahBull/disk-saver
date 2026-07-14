@@ -1,0 +1,18 @@
+[package]
+name = "disk-saver-installer"
+description = "Interactive TUI installer for disk-saver: build the config, install the binary, and set up scheduling."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "disk-saver-installer"
+path = "src/main.rs"
+
+[dependencies]
+disk-saver-core.workspace = true
+clap.workspace = true
+ratatui.workspace = true
+similar.workspace = true

@@ -36,6 +36,21 @@ cargo install --path crates/cli          # installs the `disk-saver` binary
 cargo install --path crates/cli --no-default-features --features docker,rust-target
 ```
 
+### Guided setup (TUI installer)
+
+For a one-shot interactive setup, run the installer — a small wizard that picks a cleaning
+preset, lets you toggle adapters and set project roots, previews the generated
+`~/.disk-saver.toml` (with a diff if you already have one), then writes the config, installs the
+binary to `~/.local/bin`, and registers the scheduler unit:
+
+```sh
+cargo run -p disk-saver-installer            # interactive TUI
+cargo run -p disk-saver-installer -- -y      # headless (dotfiles / CI); --config <file> to supply one
+```
+
+It's a separate on-demand crate (it pulls `ratatui`), so the shipped `disk-saver` binary stays
+TUI-free — a plain `cargo build`/`install` never compiles it.
+
 ## Quick start
 
 ```sh

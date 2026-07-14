@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Casual `cargo build`/`run`/`test` only touch the shipped `disk-saver` binary
+# and its libraries; the interactive TUI installer (which pulls ratatui) is built
+# on demand with `-p disk-saver-installer`. CI uses `--workspace` to cover it.
+default-members = ["crates/cli"]
 
 # Shared package metadata. Crates opt in via `edition.workspace = true`, etc.
 [workspace.package]
@@ -25,6 +29,7 @@ disk-saver-adapter-cargo-registry = { path = "crates/adapter-cargo-registry" }
 disk-saver-adapter-pip = { path = "crates/adapter-pip" }
 disk-saver-adapter-git-gc = { path = "crates/adapter-git-gc" }
 disk-saver-adapter-git-ignored = { path = "crates/adapter-git-ignored" }
+disk-saver-installer = { path = "crates/installer" }
 disk-saver-adapter-node-modules = { path = "crates/adapter-node-modules" }
 disk-saver-adapter-rust-target = { path = "crates/adapter-rust-target" }
 disk-saver-adapter-python-cache = { path = "crates/adapter-python-cache" }
@@ -38,7 +43,9 @@ fd-lock = "4"
 globset = "0.4"
 humantime = "2"
 humantime-serde = "1"
+ratatui = "0.29"
 rusqlite = { version = "0.32", features = ["bundled"] }
+similar = "2"
 rustix = { version = "0.38", features = ["fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
