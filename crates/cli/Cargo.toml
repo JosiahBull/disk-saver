@@ -32,6 +32,7 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 bytesize.workspace = true
 humantime.workspace = true
+fd-lock = { workspace = true }
 
 [features]
 default = ["docker", "node-modules", "rust-target", "python-cache", "trash", "decision-log"]
