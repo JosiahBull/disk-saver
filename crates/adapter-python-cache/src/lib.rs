@@ -248,8 +248,11 @@ impl Adapter for PyCacheAdapter {
             builder.add(glob);
         }
         for dir in &denylist {
-            let s = dir.to_string_lossy();
-            for pat in [s.to_string(), format!("{s}/**")] {
+            // Escape glob metacharacters in the literal path so a home dir like
+            // `/data/foo[old]` still excludes ~/Library etc. After escaping the
+            // pattern always compiles, so a build error is a real bug, not user input.
+            let s = globset::escape(&dir.to_string_lossy());
+            for pat in [s.clone(), format!("{s}/**")] {
                 match Glob::new(&pat) {
                     Ok(glob) => {
                         builder.add(glob);

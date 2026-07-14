@@ -11,7 +11,7 @@ use disk_saver_platform::FakePlatform;
 
 use crate::{
     Adapter, AdapterError, AdapterStatus, Approvals, Candidate, Class, Config, Ctx, DecisionLog,
-    Engine, Outcome, Pressure, RunOptions, RunReport, classify_pressure,
+    Engine, Outcome, Pressure, RunOptions, RunReport, Threshold, classify_pressure,
 };
 
 // ── test harness ────────────────────────────────────────────────────────────
@@ -180,6 +180,31 @@ fn classify_pressure_boundaries() {
     assert_eq!(
         classify_pressure(0, total, &g),
         Pressure::Scavenge { need: 150 }
+    );
+}
+
+#[test]
+fn classify_pressure_zero_total_is_comfortable_even_with_absolute_thresholds() {
+    // A failed disk measurement surfaces as total == 0. Absolute thresholds
+    // ignore `total`, so without the guard classify_pressure(0, 0) would resolve
+    // free=0 below scavenge_below and return Scavenge — turning a measurement
+    // error into mass deletion. The guard must force Comfortable.
+    let mut g = Config::defaults().global;
+    g.start_cleaning_below = Threshold::Absolute(20_000_000_000);
+    g.warn_below = Threshold::Absolute(12_000_000_000);
+    g.scavenge_below = Threshold::Absolute(8_000_000_000);
+    g.scavenge_target = Threshold::Absolute(15_000_000_000);
+    assert_eq!(classify_pressure(0, 0, &g), Pressure::Comfortable);
+    assert_eq!(
+        classify_pressure(5_000_000_000, 0, &g),
+        Pressure::Comfortable
+    );
+    // Sanity: with a real total the same thresholds still scavenge when low.
+    assert_eq!(
+        classify_pressure(1_000_000_000, 500_000_000_000, &g),
+        Pressure::Scavenge {
+            need: 15_000_000_000 - 1_000_000_000
+        }
     );
 }
 

@@ -448,3 +448,48 @@ fn is_send_and_sync() {
     let dyn_ref: &dyn Platform = &p;
     assert!(dyn_ref.now() > UNIX_EPOCH);
 }
+
+// ── device boundaries (mounts) — ARCHITECTURE.md §11.8 ───────────────────────
+
+#[test]
+fn metadata_reports_distinct_dev_across_a_mount() {
+    // A mount nested under a scanned root reports a different `dev`.
+    let p = FakePlatform::new()
+        .with_dir("/root", t(1))
+        .with_file("/root/a.txt", b"x".to_vec(), t(1))
+        .with_mount("/root/mnt")
+        .with_file("/root/mnt/data.bin", b"precious".to_vec(), t(1));
+
+    let root_dev = p.metadata(Path::new("/root")).unwrap().dev;
+    let same = p.metadata(Path::new("/root/a.txt")).unwrap().dev;
+    let mount_dev = p.metadata(Path::new("/root/mnt")).unwrap().dev;
+    let under_mount = p.metadata(Path::new("/root/mnt/data.bin")).unwrap().dev;
+
+    assert_eq!(root_dev, same, "same filesystem shares a device id");
+    assert_ne!(root_dev, mount_dev, "the mount is a different device");
+    assert_eq!(
+        mount_dev, under_mount,
+        "everything under the mount shares its device"
+    );
+}
+
+#[test]
+fn remove_dir_all_never_crosses_a_mount_boundary() {
+    // Deleting /root must NOT touch the contents of the /root/mnt mount.
+    let p = FakePlatform::new()
+        .with_dir("/root", t(1))
+        .with_file("/root/junk.txt", b"junk".to_vec(), t(1))
+        .with_mount("/root/mnt")
+        .with_file("/root/mnt/data.bin", b"precious".to_vec(), t(1));
+
+    let err = p.remove_dir_all(Path::new("/root")).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::DirectoryNotEmpty);
+
+    // The mounted volume's contents survive; the same-device junk is gone.
+    assert!(p.exists("/root/mnt/data.bin"), "mounted data must survive");
+    assert!(p.exists("/root/mnt"), "mount point must survive");
+    assert!(
+        !p.exists("/root/junk.txt"),
+        "same-device content is removed"
+    );
+}

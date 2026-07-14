@@ -224,9 +224,13 @@ impl Config {
                 "global.command_timeout must be greater than zero",
             ));
         }
-        if self.schedule.check_every.is_zero() {
+        // `schedule install` renders check_every via whole seconds
+        // (`as_secs()`), so a sub-second value would produce a degenerate `0s`
+        // launchd StartInterval / systemd OnUnitActiveSec that still reports
+        // success. Require at least one whole second.
+        if self.schedule.check_every < Duration::from_secs(1) {
             return Err(ConfigError::invalid(
-                "schedule.check_every must be greater than zero",
+                "schedule.check_every must be at least 1s (the OS scheduler interval is whole seconds)",
             ));
         }
         if self.schedule.run_every.is_zero() {
@@ -600,6 +604,16 @@ protect = ["postgres:*"]
     fn validate_rejects_zero_durations() {
         let c = Config::parse("[schedule]\nrun_every = \"0s\"\n").unwrap();
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_sub_second_check_every() {
+        // Non-zero but < 1s would render as a degenerate `0s` scheduler interval.
+        let c = Config::parse("[schedule]\ncheck_every = \"500ms\"\n").unwrap();
+        assert!(c.validate().is_err());
+        // Exactly 1s is fine.
+        let c = Config::parse("[schedule]\ncheck_every = \"1s\"\n").unwrap();
+        assert!(c.validate().is_ok());
     }
 
     #[test]

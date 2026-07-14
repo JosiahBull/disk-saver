@@ -98,8 +98,11 @@ pub trait Platform: Send + Sync {
     /// Remove a single file (or unlink a single symlink).
     fn remove_file(&self, path: &Path) -> std::io::Result<()>;
 
-    /// Recursively remove a directory tree. Must **not** follow symlinks:
-    /// symlinked entries are unlinked, only real directories are descended.
+    /// Recursively remove a directory tree. Must **not** follow symlinks
+    /// (symlinked entries are unlinked, only real directories are descended) and
+    /// must **not** cross a filesystem boundary: a directory on a different
+    /// device (a mount point nested in the tree) is left completely intact, which
+    /// makes the parent's removal fail — the safe outcome (ARCHITECTURE.md §11.8).
     fn remove_dir_all(&self, path: &Path) -> std::io::Result<()>;
 
     /// Free/total space of the filesystem containing `path`.

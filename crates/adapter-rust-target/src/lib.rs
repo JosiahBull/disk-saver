@@ -120,8 +120,11 @@ impl FsAdapter {
             builder.add(glob);
         }
         for dir in denylist {
-            let base = dir.to_string_lossy();
-            for pat in [base.to_string(), format!("{base}/**")] {
+            // Escape glob metacharacters in the literal path so a home dir like
+            // `/data/foo[old]` still excludes ~/Library etc. (`[..]` would
+            // otherwise be parsed as a character class and silently not match).
+            let base = globset::escape(&dir.to_string_lossy());
+            for pat in [base.clone(), format!("{base}/**")] {
                 let glob = globset::Glob::new(&pat).map_err(|e| {
                     AdapterError::Failed(anyhow::anyhow!("invalid denylist glob '{pat}': {e}"))
                 })?;

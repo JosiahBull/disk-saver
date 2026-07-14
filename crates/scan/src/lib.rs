@@ -23,9 +23,11 @@
 //!   glob set (matched against absolute paths) prunes both subtrees and
 //!   individual artifact directories.
 //!
-//! Staying on a single device is enforced by the [`Platform`] implementation's
-//! `dir_size` / `remove_dir_all`; the walk itself has no device information
-//! available through the trait (see the crate README / final notes).
+//! * The walk stays on a single filesystem: it captures each root's device
+//!   (`FileMeta::dev`) and never descends onto a different one, so a mount point
+//!   nested under a root is not traversed and its artifact dirs are never found.
+//!   Sizing and deletion are independently device-confined by the [`Platform`]
+//!   implementation's `dir_size` / `remove_dir_all`.
 #![forbid(unsafe_code)]
 
 use std::collections::HashSet;
@@ -131,9 +133,14 @@ pub fn find_artifacts(
         rules,
         rule_names: &rule_names,
         opts,
+        root_dev: None,
         out: Vec::new(),
     };
     for root in roots {
+        // Capture the root's device so the walk can stay on one filesystem
+        // (ARCHITECTURE.md §11.8). `None` (root unreadable) disables the check;
+        // deletion is separately device-confined by `Platform::remove_dir_all`.
+        walk.root_dev = p.metadata(root).map(|m| m.dev).ok();
         walk.run(root, 0);
     }
     walk.out
@@ -146,6 +153,9 @@ struct Walk<'a> {
     rules: &'a [Rule],
     rule_names: &'a HashSet<&'a str>,
     opts: &'a ScanOptions,
+    /// Device id of the current root; the walk never descends onto a different
+    /// filesystem. `None` disables the check (the root could not be stat'd).
+    root_dev: Option<u64>,
     out: Vec<Found>,
 }
 
@@ -232,36 +242,47 @@ impl Walk<'_> {
             if matched_names.iter().any(|n| *n == entry.file_name) {
                 continue;
             }
+            // Never descend onto a different filesystem (a mount point nested
+            // under the root, §11.8): an artifact dir on a mounted volume must
+            // not be found, planned, or deleted.
+            if let Some(root_dev) = self.root_dev
+                && self.p.metadata(&entry.path).map(|m| m.dev).ok() != Some(root_dev)
+            {
+                tracing::debug!(path = %entry.path.display(),
+                    "scan: skipping directory on a different filesystem");
+                continue;
+            }
             self.run(&entry.path, depth + 1);
         }
     }
 
     /// Compute `project_last_active` for `project_root` (see [`find_artifacts`]).
+    ///
+    /// This is the newest mtime of anything the developer plausibly touched:
+    /// every file and directory in the project tree (bounded by `max_depth`,
+    /// excluding artifact dirs, `.git`, and dot-directories, staying on the
+    /// root's device), plus git activity via `.git/HEAD` (moves on
+    /// checkout/switch) and `.git/logs/HEAD` (the reflog — appended on every
+    /// commit/reset/fetch, including same-branch commits). Scanning the whole
+    /// tree, not just the project root's direct children, is what makes editing a
+    /// *nested* source file — the common case — refresh the signal.
     fn last_active(&self, project_root: &Path, entries: &[DirEntry]) -> SystemTime {
         let mut newest: Option<SystemTime> = None;
-        let mut consider = |t: SystemTime| {
-            newest = Some(match newest {
-                Some(cur) if cur >= t => cur,
-                _ => t,
-            });
-        };
 
-        for entry in entries {
-            // Ignore artifact directories (builds touch them) and the `.git`
-            // directory itself (its HEAD is handled separately).
-            if entry.file_name == ".git" || self.rule_names.contains(entry.file_name.as_str()) {
-                continue;
-            }
-            if let Ok(meta) = self.p.metadata(&entry.path) {
-                consider(meta.modified);
-            }
-        }
+        // Top level is already read; recurse into non-excluded subdirectories.
+        self.scan_activity_entries(entries, self.opts.max_depth, &mut newest);
 
-        let head = project_root.join(".git").join("HEAD");
-        if let Ok(meta) = self.p.metadata(&head)
-            && meta.kind == FileKind::File
-        {
-            consider(meta.modified);
+        // Git activity signals.
+        for rel in [["HEAD"].as_slice(), ["logs", "HEAD"].as_slice()] {
+            let mut path = project_root.join(".git");
+            for comp in rel {
+                path = path.join(comp);
+            }
+            if let Ok(meta) = self.p.metadata(&path)
+                && meta.kind == FileKind::File
+            {
+                bump(&mut newest, meta.modified);
+            }
         }
 
         newest.unwrap_or_else(|| {
@@ -270,6 +291,51 @@ impl Walk<'_> {
                 .map(|m| m.modified)
                 .unwrap_or(UNIX_EPOCH)
         })
+    }
+
+    /// Fold the mtimes of `entries` (and, recursively, their non-excluded
+    /// subdirectories) into `newest`. `budget` bounds the descent depth.
+    fn scan_activity(&self, dir: &Path, budget: usize, newest: &mut Option<SystemTime>) {
+        if let Ok(entries) = self.p.read_dir(dir) {
+            self.scan_activity_entries(&entries, budget, newest);
+        }
+    }
+
+    /// The shared body of [`scan_activity`] operating on already-read `entries`.
+    fn scan_activity_entries(
+        &self,
+        entries: &[DirEntry],
+        budget: usize,
+        newest: &mut Option<SystemTime>,
+    ) {
+        for entry in entries {
+            // Ignore artifact directories (builds touch them; their effect shows
+            // up via source files) and `.git` (handled via HEAD/logs/HEAD).
+            if entry.file_name == ".git" || self.rule_names.contains(entry.file_name.as_str()) {
+                continue;
+            }
+            let Ok(meta) = self.p.metadata(&entry.path) else {
+                continue;
+            };
+            // Never let another filesystem's mtimes count (stay on the root device).
+            if let Some(root_dev) = self.root_dev
+                && meta.dev != root_dev
+            {
+                continue;
+            }
+            bump(newest, meta.modified);
+            // Recurse into real, non-dot subdirectories within the depth budget.
+            if entry.kind == FileKind::Dir && budget > 0 && !entry.file_name.starts_with('.') {
+                self.scan_activity(&entry.path, budget - 1, newest);
+            }
+        }
+    }
+}
+
+/// Update `newest` to `t` if `t` is later (or `newest` is unset).
+fn bump(newest: &mut Option<SystemTime>, t: SystemTime) {
+    if newest.is_none_or(|cur| t > cur) {
+        *newest = Some(t);
     }
 }
 
@@ -390,6 +456,90 @@ mod tests {
         );
         assert_eq!(f.project_root, PathBuf::from("/home/tester/dev/app"));
         assert_eq!(f.size, 1_200);
+    }
+
+    #[test]
+    fn does_not_cross_a_filesystem_boundary() {
+        // A stale, valid node_modules living on a mount nested under the scanned
+        // root must NOT be found (ARCHITECTURE.md §11.8): the walk stays on the
+        // root's device.
+        let fake = FakePlatform::new()
+            .with_dir("~/dev", t(10))
+            .with_mount("~/dev/archive")
+            .with_file("~/dev/archive/app/package.json", "{}", t(10))
+            .with_sized_dir("~/dev/archive/app/node_modules", 5_000, t(10));
+
+        let found = find_artifacts(
+            &fake,
+            &[PathBuf::from("~/dev")],
+            &[node_rule()],
+            &ScanOptions::default(),
+        );
+        assert!(
+            found.is_empty(),
+            "artifact dirs on a mounted volume must not be found, got {found:?}"
+        );
+
+        // Sanity: the same layout on the SAME device IS found.
+        let same_dev = FakePlatform::new()
+            .with_dir("~/dev", t(10))
+            .with_file("~/dev/archive/app/package.json", "{}", t(10))
+            .with_sized_dir("~/dev/archive/app/node_modules", 5_000, t(10));
+        let found = find_artifacts(
+            &same_dev,
+            &[PathBuf::from("~/dev")],
+            &[node_rule()],
+            &ScanOptions::default(),
+        );
+        assert_eq!(found.len(), 1, "same-device artifact dir is found");
+    }
+
+    #[test]
+    fn last_active_reflects_a_nested_file_edit() {
+        // Project root + its direct children are old, but a deeply nested source
+        // file was just edited. last_active must be the nested file's mtime, so
+        // the project is not judged idle (§12.2).
+        let fake = FakePlatform::new()
+            .with_file("~/dev/app/package.json", "{}", t(10))
+            .with_sized_dir("~/dev/app/node_modules", 1_200, t(10))
+            .with_file("~/dev/app/src/deep/mod/foo.js", "code", t(100));
+
+        let found = find_artifacts(
+            &fake,
+            &[PathBuf::from("~/dev")],
+            &[node_rule()],
+            &ScanOptions::default(),
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].last_active,
+            t(100),
+            "nested edit must refresh activity"
+        );
+    }
+
+    #[test]
+    fn last_active_reflects_a_same_branch_commit_via_reflog() {
+        // HEAD is old (no branch switch), but `.git/logs/HEAD` (the reflog) moved
+        // — a commit on the current branch. last_active must reflect it.
+        let fake = FakePlatform::new()
+            .with_file("~/dev/app/package.json", "{}", t(10))
+            .with_sized_dir("~/dev/app/node_modules", 1_200, t(10))
+            .with_file("~/dev/app/.git/HEAD", "ref: refs/heads/main", t(10))
+            .with_file("~/dev/app/.git/logs/HEAD", "commit ...", t(90));
+
+        let found = find_artifacts(
+            &fake,
+            &[PathBuf::from("~/dev")],
+            &[node_rule()],
+            &ScanOptions::default(),
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].last_active,
+            t(90),
+            "same-branch commit must refresh activity"
+        );
     }
 
     #[test]

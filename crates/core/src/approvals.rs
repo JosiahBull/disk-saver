@@ -10,7 +10,7 @@
 //! goes stale — while preserving `first_queued` and any `DeniedForever` /
 //! active-`Snoozed` state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -129,7 +129,20 @@ impl<'a> Approvals<'a> {
     /// denied and a `Snoozed` item stays snoozed even after re-planning). Keys
     /// no longer present are dropped unless they are `DeniedForever` or actively
     /// `Snoozed`. Returns the count of currently actionable-pending items.
-    pub fn rebuild(&self, now: SystemTime, flagged: &[(String, Candidate)]) -> usize {
+    ///
+    /// `authoritative` is the set of adapter names that actually ran to
+    /// completion this cycle (were not filtered out by `--adapter` and did not
+    /// end `Unavailable`/`Failed`). Only *their* vanished keys are GC-eligible:
+    /// an adapter that never ran tells us nothing about whether its queued items
+    /// still qualify, so its entries are preserved untouched. Without this, a
+    /// subset run (`--adapter rust-target`) or an `Unavailable` trash adapter
+    /// (e.g. no Full Disk Access) would silently wipe the trash approvals queue.
+    pub fn rebuild(
+        &self,
+        now: SystemTime,
+        flagged: &[(String, Candidate)],
+        authoritative: &BTreeSet<String>,
+    ) -> usize {
         let now_unix = to_unix(now);
         let existing: BTreeMap<String, QueuedItem> =
             self.list().into_iter().map(|it| (it.key(), it)).collect();
@@ -158,12 +171,15 @@ impl<'a> Approvals<'a> {
             next.insert(key, item);
         }
 
-        // Retain vanished keys only if DeniedForever or actively Snoozed.
+        // Retain a vanished key if its adapter did not run authoritatively this
+        // cycle (so its absence from `flagged` is uninformative), or if it is
+        // DeniedForever or actively Snoozed.
         for (key, item) in &existing {
             if next.contains_key(key) {
                 continue;
             }
-            let keep = matches!(item.state, ApprovalState::DeniedForever)
+            let keep = !authoritative.contains(&item.adapter)
+                || matches!(item.state, ApprovalState::DeniedForever)
                 || item.is_active_snooze(now_unix);
             if keep {
                 next.insert(key.clone(), item.clone());
@@ -239,6 +255,12 @@ mod tests {
             .collect()
     }
 
+    /// Authoritative set for the tests below (all exercise the `trash` adapter),
+    /// i.e. "trash ran to completion this cycle, so its vanished keys may be GC'd".
+    fn auth() -> BTreeSet<String> {
+        ["trash".to_string()].into_iter().collect()
+    }
+
     #[test]
     fn queued_item_key_format() {
         let it = QueuedItem {
@@ -256,7 +278,11 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let a = Approvals::open(&store);
         let now = UNIX_EPOCH + Duration::from_secs(1000);
-        let n = a.rebuild(now, &flagged(&[("trash", "a", 10), ("trash", "b", 20)]));
+        let n = a.rebuild(
+            now,
+            &flagged(&[("trash", "a", 10), ("trash", "b", 20)]),
+            &auth(),
+        );
         assert_eq!(n, 2);
         let list = a.list();
         assert_eq!(list.len(), 2);
@@ -272,10 +298,18 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let a = Approvals::open(&store);
         let t0 = UNIX_EPOCH + Duration::from_secs(100);
-        a.rebuild(t0, &flagged(&[("trash", "a", 10), ("trash", "b", 20)]));
+        a.rebuild(
+            t0,
+            &flagged(&[("trash", "a", 10), ("trash", "b", 20)]),
+            &auth(),
+        );
         // Later run: `a` still planned (bytes changed), `b` gone, `c` new.
         let t1 = UNIX_EPOCH + Duration::from_secs(500);
-        let n = a.rebuild(t1, &flagged(&[("trash", "a", 15), ("trash", "c", 30)]));
+        let n = a.rebuild(
+            t1,
+            &flagged(&[("trash", "a", 15), ("trash", "c", 30)]),
+            &auth(),
+        );
         assert_eq!(n, 2);
         let list = a.list();
         let keys: Vec<String> = list.iter().map(|it| it.key()).collect();
@@ -288,14 +322,42 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_preserves_items_of_non_authoritative_adapters() {
+        // A cycle where `trash` did NOT run (filtered out by --adapter, or
+        // Unavailable): its queued item is absent from `flagged` but must NOT be
+        // GC'd, because its absence is uninformative. Only `docker` (which ran)
+        // is authoritative here.
+        let store = Store::open_in_memory().unwrap();
+        let a = Approvals::open(&store);
+        let t0 = UNIX_EPOCH + Duration::from_secs(100);
+        a.rebuild(t0, &flagged(&[("trash", "photo.png", 10)]), &auth());
+        assert_eq!(a.list().len(), 1);
+
+        // Later run: trash is not authoritative and proposes nothing.
+        let t1 = UNIX_EPOCH + Duration::from_secs(500);
+        let docker_only: BTreeSet<String> = ["docker".to_string()].into_iter().collect();
+        let n = a.rebuild(t1, &[], &docker_only);
+        assert_eq!(n, 1, "trash's pending item must survive");
+        let list = a.list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].key(), "trash/photo.png");
+        assert_eq!(list[0].first_queued_unix, 100, "first_queued preserved");
+
+        // When trash IS authoritative again and no longer proposes it, it is GC'd.
+        let n = a.rebuild(t1, &[], &auth());
+        assert_eq!(n, 0);
+        assert!(a.list().is_empty());
+    }
+
+    #[test]
     fn deny_forever_survives_rebuild_even_when_vanished() {
         let store = Store::open_in_memory().unwrap();
         let a = Approvals::open(&store);
         let now = UNIX_EPOCH + Duration::from_secs(10);
-        a.rebuild(now, &flagged(&[("trash", "a", 10)]));
+        a.rebuild(now, &flagged(&[("trash", "a", 10)]), &auth());
         a.deny_forever("trash/a");
         // `a` no longer planned, but a denial must persist.
-        let n = a.rebuild(now, &[]);
+        let n = a.rebuild(now, &[], &auth());
         assert_eq!(n, 0); // denied is not actionable
         let list = a.list();
         assert_eq!(list.len(), 1);
@@ -307,9 +369,9 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let a = Approvals::open(&store);
         let now = UNIX_EPOCH + Duration::from_secs(10);
-        a.rebuild(now, &flagged(&[("trash", "a", 10)]));
+        a.rebuild(now, &flagged(&[("trash", "a", 10)]), &auth());
         a.deny_forever("trash/a");
-        let n = a.rebuild(now, &flagged(&[("trash", "a", 10)]));
+        let n = a.rebuild(now, &flagged(&[("trash", "a", 10)]), &auth());
         assert_eq!(n, 0);
         assert_eq!(a.list()[0].state, ApprovalState::DeniedForever);
     }
@@ -319,12 +381,12 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let a = Approvals::open(&store);
         let t0 = UNIX_EPOCH + Duration::from_secs(100);
-        a.rebuild(t0, &flagged(&[("trash", "a", 10)]));
+        a.rebuild(t0, &flagged(&[("trash", "a", 10)]), &auth());
         a.snooze("trash/a", t0, Duration::from_secs(50));
         // Still within the snooze window → not actionable, but retained on rebuild.
         let mid = UNIX_EPOCH + Duration::from_secs(120);
         assert_eq!(a.pending(mid).len(), 0);
-        let n = a.rebuild(mid, &[]); // vanished, but actively snoozed → kept
+        let n = a.rebuild(mid, &[], &auth()); // vanished, but actively snoozed → kept
         assert_eq!(n, 0);
         assert_eq!(a.list().len(), 1);
         // After expiry it becomes actionable again.
@@ -337,11 +399,11 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let a = Approvals::open(&store);
         let t0 = UNIX_EPOCH + Duration::from_secs(100);
-        a.rebuild(t0, &flagged(&[("trash", "a", 10)]));
+        a.rebuild(t0, &flagged(&[("trash", "a", 10)]), &auth());
         a.snooze("trash/a", t0, Duration::from_secs(50));
         // After expiry AND no longer planned → dropped.
         let after = UNIX_EPOCH + Duration::from_secs(300);
-        let n = a.rebuild(after, &[]);
+        let n = a.rebuild(after, &[], &auth());
         assert_eq!(n, 0);
         assert!(a.list().is_empty());
     }
@@ -351,7 +413,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let a = Approvals::open(&store);
         let now = UNIX_EPOCH;
-        a.rebuild(now, &flagged(&[("trash", "a", 10)]));
+        a.rebuild(now, &flagged(&[("trash", "a", 10)]), &auth());
         let item = a.approve("trash/a").unwrap();
         assert_eq!(item.candidate.id, "a");
         assert!(a.list().is_empty());
@@ -366,6 +428,7 @@ mod tests {
         a.rebuild(
             now,
             &flagged(&[("trash", "a", 10), ("trash", "b", 20), ("trash", "c", 30)]),
+            &auth(),
         );
         a.deny_forever("trash/c"); // excluded
         a.snooze("trash/b", now, Duration::from_secs(1000)); // excluded (active)

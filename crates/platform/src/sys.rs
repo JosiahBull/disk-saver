@@ -66,6 +66,7 @@ pub(crate) fn metadata(path: &Path) -> io::Result<FileMeta> {
         kind: kind_from_file_type(md.file_type()),
         len: md.len(),
         modified: md.modified()?,
+        dev: md.dev(),
     })
 }
 
@@ -132,9 +133,15 @@ pub(crate) fn dir_size(path: &Path) -> io::Result<u64> {
     size_on_device(path, &md, dev)
 }
 
-/// Recursively remove `path`, logging every removal before it happens and never
-/// following symlinks (symlinked directories are unlinked, not descended).
-fn remove_tree(path: &Path) -> io::Result<()> {
+/// Recursively remove `path`, logging every removal before it happens, never
+/// following symlinks (symlinked directories are unlinked, not descended), and
+/// never crossing a filesystem boundary: a child directory on a *different*
+/// device (a mount point) is left completely untouched. `dev` is the device of
+/// the deletion root — descending into a mount and unlinking its contents would
+/// be catastrophic data loss (ARCHITECTURE.md §11.8), so we skip it. Leaving a
+/// cross-device child in place makes the parent `remove_dir` fail with `ENOTEMPTY`,
+/// which the caller reports as a failure — the safe outcome.
+fn remove_tree(path: &Path, dev: u64) -> io::Result<()> {
     let md = fs::symlink_metadata(path)?;
     let ft = md.file_type();
 
@@ -146,7 +153,16 @@ fn remove_tree(path: &Path) -> io::Result<()> {
     if ft.is_dir() {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
-            remove_tree(&entry.path())?;
+            let child = entry.path();
+            let child_md = fs::symlink_metadata(&child)?;
+            // A real (non-symlink) directory on another device is a mount point:
+            // never descend into or unlink it.
+            if child_md.file_type().is_dir() && child_md.dev() != dev {
+                tracing::warn!(path = %child.display(),
+                    "disk-saver: refusing to remove across a filesystem boundary; leaving in place");
+                continue;
+            }
+            remove_tree(&child, dev)?;
         }
         tracing::info!(path = %path.display(), "disk-saver: removing directory");
         return fs::remove_dir(path);
@@ -164,10 +180,12 @@ pub(crate) fn remove_file(path: &Path) -> io::Result<()> {
 }
 
 /// Recursively remove a directory tree. Refuses relative paths; never follows
-/// symlinks.
+/// symlinks; never crosses a filesystem boundary (a mounted volume nested inside
+/// the tree is left intact, §11.8).
 pub(crate) fn remove_dir_all(path: &Path) -> io::Result<()> {
     ensure_absolute(path)?;
-    remove_tree(path)
+    let dev = fs::symlink_metadata(path)?.dev();
+    remove_tree(path, dev)
 }
 
 /// Free/total space of the filesystem containing `path`, via `statvfs`.

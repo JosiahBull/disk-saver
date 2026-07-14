@@ -11,7 +11,8 @@
 //! Adapter panics are caught (`catch_unwind`) and become
 //! [`AdapterStatus::Failed`]; a broken adapter can never abort the janitor.
 
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,14 @@ use crate::{DiskUsage, Notification, Store, Urgency};
 /// scavenge_below` → Scavenge (with `need = scavenge_target - free`); otherwise
 /// Normal.
 pub fn classify_pressure(free: u64, total: u64, g: &GlobalConfig) -> Pressure {
+    // A zero total means the disk could not be measured (statvfs failed, or the
+    // configured path does not exist). Fail SAFE: never let a measurement
+    // failure classify as pressure that would delete files. Without this guard,
+    // absolute thresholds (which ignore `total`) would resolve against a `free`
+    // of 0 and yield `Scavenge`, turning a measurement error into mass deletion.
+    if total == 0 {
+        return Pressure::Comfortable;
+    }
     let start = g.start_cleaning_below.bytes(total);
     let scavenge = g.scavenge_below.bytes(total);
     if free >= start {
@@ -206,16 +215,16 @@ impl<'a> Engine<'a> {
     /// skipped exit returns one with `throttled = true`.
     pub fn run(&mut self, opts: &RunOptions) -> RunReport {
         let now = self.platform.now();
-        let disk_path = self
-            .config
-            .global
-            .disk
-            .clone()
-            .unwrap_or_else(|| self.platform.home_dir());
-        let usage = self.measure(&disk_path);
-        let free_before = usage.available;
-        let total = usage.total;
-        let below_warn = free_before < self.config.global.warn_below.bytes(total);
+        let disk_path = self.disk_path();
+        // A failed measurement fails SAFE: total = 0 makes classify_pressure
+        // return Comfortable, and below_warn is false (no false pressure cadence
+        // or scavenge-soon warning).
+        let measured = self.measure(&disk_path);
+        let free_before = measured.map(|u| u.available).unwrap_or(0);
+        let total = measured.map(|u| u.total).unwrap_or(0);
+        let below_warn = measured
+            .map(|u| u.available < self.config.global.warn_below.bytes(u.total))
+            .unwrap_or(false);
 
         // 2. THROTTLE GATE (skipped with --force).
         if !opts.force {
@@ -267,10 +276,11 @@ impl<'a> Engine<'a> {
         let queued_items;
 
         if !pressure.deletes() {
-            // 7. COMFORTABLE: GC approvals, no plan/execute.
+            // 7. COMFORTABLE: GC approvals, no plan/execute. Only adapters that
+            // observed OK this cycle are authoritative for GC (see rebuild).
             let approvals = Approvals::open(self.store);
             if !opts.dry_run {
-                approvals.rebuild(now, &[]);
+                approvals.rebuild(now, &[], &authoritative_names(&runs));
             }
             queued_items = approvals.pending(now).len();
         } else {
@@ -315,7 +325,7 @@ impl<'a> Engine<'a> {
             queued_items = if opts.dry_run {
                 approvals.pending(now).len()
             } else {
-                approvals.rebuild(now, &flagged)
+                approvals.rebuild(now, &flagged, &authoritative_names(&runs))
             };
 
             // 10. EXECUTE (never in dry-run; never flagged candidates).
@@ -324,7 +334,10 @@ impl<'a> Engine<'a> {
                     free_after = self.scavenge(&mut runs, pressure, &disk_path, free_before, total);
                 } else {
                     self.execute_normal(&mut runs, pressure);
-                    free_after = self.measure(&disk_path).available;
+                    free_after = self
+                        .measure(&disk_path)
+                        .map(|u| u.available)
+                        .unwrap_or(free_before);
                 }
             }
         }
@@ -366,19 +379,26 @@ impl<'a> Engine<'a> {
             .iter()
             .position(|a| a.name() == adapter)
             .ok_or_else(|| AdapterError::unavailable(format!("no such adapter: {adapter}")))?;
-        let disk_path = self
-            .config
-            .global
-            .disk
-            .clone()
-            .unwrap_or_else(|| self.platform.home_dir());
-        let usage = self.measure(&disk_path);
-        let pressure = classify_pressure(usage.available, usage.total, &self.config.global);
+        // Approval is explicit user intent, so the batch is executed regardless
+        // of pressure; the measurement only informs the Ctx an adapter sees. A
+        // failed measurement → Comfortable (never fabricated pressure).
+        let pressure = self
+            .measure(&self.disk_path())
+            .map(|u| classify_pressure(u.available, u.total, &self.config.global))
+            .unwrap_or(Pressure::Comfortable);
         let name = self.adapters[idx].name();
         let bucket = self.store.bucket(name);
         let mut ctx = Ctx::new(self.platform, bucket, pressure, self.decisions);
         let adapter_ref: &mut dyn Adapter = &mut *self.adapters[idx];
-        adapter_ref.execute(&mut ctx, batch)
+        // Isolate an adapter panic here just as run_phase does for scheduled runs
+        // (§10): a logic bug in one adapter must never abort `review`.
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            adapter_ref.execute(&mut ctx, batch)
+        }));
+        match caught {
+            Ok(res) => res,
+            Err(p) => Err(AdapterError::Failed(anyhow::anyhow!(panic_message(p)))),
+        }
     }
 
     // ── phase execution & isolation ─────────────────────────────────────
@@ -478,8 +498,14 @@ impl<'a> Engine<'a> {
                 let idx = runs[ri].idx;
                 let res = self.run_phase(idx, pressure, |a, ctx| a.execute(ctx, &batch));
                 apply_outcomes(&mut runs[ri], res, decisions, now, pressure);
-                // Real measurement, not candidate byte-estimates.
-                free_now = self.measure(disk_path).available;
+                // Real measurement, not candidate byte-estimates. If the disk can
+                // no longer be measured, STOP scavenging: continuing blind would
+                // over-delete (a `0` free reading would defeat the early-stop and
+                // burn through every remaining wave).
+                match self.measure(disk_path) {
+                    Some(u) => free_now = u.available,
+                    None => return free_now,
+                }
                 i = j;
             }
         }
@@ -488,14 +514,29 @@ impl<'a> Engine<'a> {
 
     // ── engine-owned KV state (`_engine` bucket) ────────────────────────
 
-    fn measure(&self, path: &Path) -> DiskUsage {
-        self.platform.disk_usage(path).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "disk_usage failed; treating disk as comfortable");
-            DiskUsage {
-                total: 0,
-                available: 0,
+    /// The filesystem whose free space drives the pressure model: the configured
+    /// `global.disk` (tilde-expanded, so it matches the path the CLI validated
+    /// and `status` reports), else the home directory.
+    fn disk_path(&self) -> PathBuf {
+        match &self.config.global.disk {
+            Some(d) => crate::config::expand_tilde(d, &self.platform.home_dir()),
+            None => self.platform.home_dir(),
+        }
+    }
+
+    /// Measure the disk, or `None` if `statvfs` failed. Returning `None` (rather
+    /// than a `{0,0}` sentinel) forces callers to decide the fail-safe explicitly:
+    /// a run treats it as [`Pressure::Comfortable`] (delete nothing), and scavenge
+    /// re-measurement stops rather than assuming zero free space.
+    fn measure(&self, path: &Path) -> Option<DiskUsage> {
+        match self.platform.disk_usage(path) {
+            Ok(u) => Some(u),
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(),
+                    "disk_usage failed; treating disk as comfortable (deleting nothing)");
+                None
             }
-        })
+        }
     }
 
     fn active_indices(&self, opts: &RunOptions) -> Vec<usize> {
@@ -681,6 +722,15 @@ impl<'a> Engine<'a> {
             false,
         );
     }
+}
+
+/// The names of adapters that ran to completion (`is_ok()`) this cycle — the
+/// set whose vanished approvals entries may be GC'd (see [`Approvals::rebuild`]).
+fn authoritative_names(runs: &[AdapterRun]) -> BTreeSet<String> {
+    runs.iter()
+        .filter(|r| r.is_ok())
+        .map(|r| r.name.clone())
+        .collect()
 }
 
 /// Unix seconds for `t`, saturating to zero before the epoch.

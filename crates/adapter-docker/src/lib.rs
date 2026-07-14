@@ -592,8 +592,11 @@ impl DockerAdapter {
             Pressure::Scavenge { .. } => self.config.min_age,
             _ => self.config.max_age,
         };
-        let hours = age.as_secs() / 3600;
-        let filter = format!("until={hours}h");
+        // docker's `until` filter accepts a Go-style duration, so pass exact
+        // seconds. Truncating to whole hours (`as_secs() / 3600`) would round a
+        // sub-hour floor down to `until=0h`, which prunes ALL build cache
+        // regardless of age — violating the `min_age`/`max_age` floor (§11.2).
+        let filter = format!("until={}s", age.as_secs());
         let spec = CommandSpec::new(
             "docker",
             [

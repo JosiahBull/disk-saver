@@ -82,6 +82,11 @@ struct FakeState {
     available: u64,
     total: u64,
     nodes: BTreeMap<PathBuf, FakeNode>,
+    /// Simulated mount points: `(mount_root, device_id)`. A node's device is the
+    /// id of the longest mount root that is a prefix of its path, else `1` (the
+    /// default "root" device). Lets tests model a filesystem boundary nested
+    /// under a scanned root (ARCHITECTURE.md §11.8).
+    mounts: Vec<(PathBuf, u64)>,
     commands: Vec<CommandRule>,
     removed: Vec<PathBuf>,
     notifications: Vec<Notification>,
@@ -116,6 +121,17 @@ impl FakeState {
         self.trash_dirs
             .clone()
             .unwrap_or_else(|| vec![self.home.join(".local").join("share").join("Trash")])
+    }
+
+    /// The device id of `path`: the id of the longest registered mount root that
+    /// is a prefix of (or equal to) `path`, else `1` (the default device).
+    fn dev_of(&self, path: &Path) -> u64 {
+        self.mounts
+            .iter()
+            .filter(|(root, _)| path == root || path.starts_with(root))
+            .max_by_key(|(root, _)| root.components().count())
+            .map(|(_, dev)| *dev)
+            .unwrap_or(1)
     }
 
     /// Ensure every ancestor directory of `path` exists as a `Dir` node.
@@ -264,6 +280,7 @@ impl FakePlatform {
                 available: 500_000_000_000,
                 total: 1_000_000_000_000,
                 nodes: BTreeMap::new(),
+                mounts: Vec::new(),
                 commands: Vec::new(),
                 removed: Vec::new(),
                 notifications: Vec::new(),
@@ -286,6 +303,29 @@ impl FakePlatform {
             let mut st = self.lock();
             let home = home.into();
             st.home = home.components().collect();
+        }
+        self
+    }
+
+    /// Register `path` (and its subtree) as a separate filesystem, so that
+    /// [`Platform::metadata`] reports a distinct `dev` for it — modelling a mount
+    /// point nested under a scanned root. Also creates the mount-point directory.
+    /// Each call uses a fresh device id.
+    #[must_use]
+    pub fn with_mount(self, path: impl AsRef<Path>) -> Self {
+        {
+            let mut st = self.lock();
+            let p = normalize(path.as_ref(), &st.home);
+            let dev = 2 + st.mounts.len() as u64; // 1 is the default device.
+            st.mounts.push((p.clone(), dev));
+            let now = st.now;
+            st.insert(
+                p,
+                FakeNode {
+                    kind: NodeKind::Dir,
+                    modified: now,
+                },
+            );
         }
         self
     }
@@ -542,6 +582,7 @@ impl Platform for FakePlatform {
                 kind: node_file_kind(&node.kind),
                 len: node_len(&node.kind),
                 modified: node.modified,
+                dev: st.dev_of(&p),
             }),
             None => Err(not_found(&p)),
         }
@@ -643,11 +684,47 @@ impl Platform for FakePlatform {
             return Ok(());
         }
 
-        // Remove the node and every descendant key. `Path::starts_with` is
-        // component-aware, so `/a/bc` is not treated as under `/a/b`.
-        st.nodes.retain(|k, _| k != &p && !k.starts_with(&p));
-        st.removed.push(p);
-        Ok(())
+        // Never cross a filesystem boundary (§11.8): any node under `p` that
+        // lives on a different device is a mount and must survive, along with the
+        // same-device chain of directories leading down to it (so, as on a real
+        // fs, the parent cannot be removed and the whole call fails).
+        let root_dev = st.dev_of(&p);
+        let keep_mount: Vec<PathBuf> = st
+            .nodes
+            .keys()
+            .filter(|k| (*k == &p || k.starts_with(&p)) && st.dev_of(k) != root_dev)
+            .cloned()
+            .collect();
+
+        if keep_mount.is_empty() {
+            // Simple case: remove the node and every descendant key.
+            // `Path::starts_with` is component-aware, so `/a/bc` is not under `/a/b`.
+            st.nodes.retain(|k, _| k != &p && !k.starts_with(&p));
+            st.removed.push(p);
+            return Ok(());
+        }
+
+        let to_remove: Vec<PathBuf> = st
+            .nodes
+            .keys()
+            .filter(|k| {
+                (*k == &p || k.starts_with(&p))
+                    && st.dev_of(k) == root_dev
+                    && !keep_mount.iter().any(|m| m.starts_with(k))
+            })
+            .cloned()
+            .collect();
+        for k in &to_remove {
+            st.nodes.remove(k);
+        }
+        st.removed.extend(to_remove);
+        Err(io::Error::new(
+            io::ErrorKind::DirectoryNotEmpty,
+            format!(
+                "fake: refusing to remove across a filesystem boundary under {}",
+                p.display()
+            ),
+        ))
     }
 
     fn disk_usage(&self, _path: &Path) -> io::Result<DiskUsage> {

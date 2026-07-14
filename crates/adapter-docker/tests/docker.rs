@@ -403,7 +403,7 @@ fn build_cache_prune_uses_max_age_normally_and_min_age_under_scavenge() {
         )]
     };
 
-    // Normal → until=<max_age = 7d = 168h>.
+    // Normal → until=<max_age = 7d = 604800s> (exact seconds, never rounded down).
     {
         let fake = fake_with_version().with_command_prefix(
             "docker",
@@ -419,11 +419,11 @@ fn build_cache_prune_uses_max_age_normally_and_min_age_under_scavenge() {
         let last = fake.commands_run().pop().unwrap();
         assert_eq!(
             last.args,
-            ["builder", "prune", "--force", "--filter", "until=168h"]
+            ["builder", "prune", "--force", "--filter", "until=604800s"]
         );
     }
 
-    // Scavenge → until=<min_age = 2d = 48h>.
+    // Scavenge → until=<min_age = 2d = 172800s>.
     {
         let fake = fake_with_version().with_command_prefix(
             "docker",
@@ -443,9 +443,45 @@ fn build_cache_prune_uses_max_age_normally_and_min_age_under_scavenge() {
         let last = fake.commands_run().pop().unwrap();
         assert_eq!(
             last.args,
-            ["builder", "prune", "--force", "--filter", "until=48h"]
+            ["builder", "prune", "--force", "--filter", "until=172800s"]
         );
     }
+}
+
+#[test]
+fn build_cache_prune_sub_hour_floor_is_not_rounded_to_zero() {
+    // A sub-hour min_age under scavenge must NOT render `until=0h` (which would
+    // prune ALL build cache). Seconds granularity keeps the floor exact.
+    let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+    let batch = [Candidate::new(
+        "buildcache",
+        "build cache",
+        42,
+        now,
+        Class::Rebuildable,
+    )];
+
+    let fake = fake_with_version().with_command_prefix(
+        "docker",
+        &["builder", "prune"],
+        CommandOutput::ok(""),
+    );
+    let store = Store::open_in_memory().unwrap();
+    let log = DecisionLog::disabled();
+    let mut adapter = adapter_from("max_age = \"7d\"\nmin_age = \"30m\"");
+    let mut ctx = Ctx::new(
+        &fake,
+        store.bucket("docker"),
+        Pressure::Scavenge { need: 1 },
+        &log,
+    );
+    adapter.execute(&mut ctx, &batch).unwrap();
+    let last = fake.commands_run().pop().unwrap();
+    // 30 minutes = 1800 seconds, never "until=0h".
+    assert_eq!(
+        last.args,
+        ["builder", "prune", "--force", "--filter", "until=1800s"]
+    );
 }
 
 // ── comfortable proposes nothing ────────────────────────────────────────────
