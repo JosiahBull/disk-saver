@@ -71,17 +71,21 @@ fn dispatch(cli: Cli) -> Result<u8> {
     match cli.command {
         Command::Run(args) => commands::run::execute(&app, RunParams::from_run(args)),
         Command::Plan(args) => commands::run::execute(&app, RunParams::from_plan(args)),
-        Command::Review(_) => commands::stubs::not_implemented("review"),
-        Command::Status => commands::stubs::not_implemented("status"),
+        Command::Review(args) => commands::review::execute(&app, args),
+        Command::Status => commands::status::run(&app),
         #[cfg(feature = "decision-log")]
-        Command::Why(_) => commands::stubs::not_implemented("why"),
+        Command::Why(args) => commands::why::run(&app, &args.query),
         Command::Doctor => commands::doctor::run(&app),
         Command::Config(args) => match args.action {
             ConfigAction::Init => unreachable!("`config init` is handled before config load"),
             ConfigAction::Check => commands::config::check(&app),
             ConfigAction::Show => commands::config::show(&app),
         },
-        Command::Schedule(_) => commands::stubs::not_implemented("schedule"),
+        Command::Schedule(args) => match args.action {
+            cli::ScheduleAction::Install => commands::schedule::install(&app),
+            cli::ScheduleAction::Uninstall => commands::schedule::uninstall(&app),
+            cli::ScheduleAction::Status => commands::schedule::status(&app),
+        },
         Command::State(args) => match args.action {
             cli::StateAction::Clear { adapter } => commands::state::clear(&app, &adapter),
             cli::StateAction::Show { adapter } => commands::state::show(&app, &adapter),

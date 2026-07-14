@@ -44,6 +44,7 @@ trash = ["dep:disk-saver-adapter-trash"]
 decision-log = ["disk-saver-core/decision-log"]
 
 [dev-dependencies]
+disk-saver-core.workspace = true
 assert_cmd.workspace = true
 tempfile.workspace = true
 predicates.workspace = true

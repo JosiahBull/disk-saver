@@ -8,6 +8,10 @@
 
 pub mod config;
 pub mod doctor;
+pub mod review;
 pub mod run;
+pub mod schedule;
 pub mod state;
-pub mod stubs;
+pub mod status;
+#[cfg(feature = "decision-log")]
+pub mod why;
