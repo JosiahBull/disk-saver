@@ -18,7 +18,11 @@ disk-saver-core = { path = "crates/core" }
 disk-saver-kv = { path = "crates/kv" }
 disk-saver-platform = { path = "crates/platform" }
 disk-saver-scan = { path = "crates/scan" }
+disk-saver-cachedir = { path = "crates/cachedir" }
 disk-saver-adapter-docker = { path = "crates/adapter-docker" }
+disk-saver-adapter-pnpm = { path = "crates/adapter-pnpm" }
+disk-saver-adapter-cargo-registry = { path = "crates/adapter-cargo-registry" }
+disk-saver-adapter-pip = { path = "crates/adapter-pip" }
 disk-saver-adapter-node-modules = { path = "crates/adapter-node-modules" }
 disk-saver-adapter-rust-target = { path = "crates/adapter-rust-target" }
 disk-saver-adapter-python-cache = { path = "crates/adapter-python-cache" }

@@ -106,7 +106,14 @@ accept absolute sizes (`"40GB"`) or percentages (`"10%"`); durations use `"7d"`/
 | `node-modules` | `node_modules/` next to a `package.json` | Cache |
 | `rust-target` | cargo `target/` (next to `Cargo.toml`, with `CACHEDIR.TAG`) | Rebuildable |
 | `python-cache` | `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox` (`.venv` opt-in) | Rebuildable |
+| `pnpm` | global pnpm store (via `pnpm store path`) + metadata cache | Cache |
+| `cargo-registry` | `~/.cargo` registry cache/src + git db/checkouts (index kept) | Cache |
+| `pip` | pip download/wheel cache under the platform cache dir | Cache |
 | `trash` | OS recycle bin (XDG on Linux, `~/.Trash` on macOS) | UserData (confirm by default) |
+
+The three global-cache adapters (`pnpm`, `cargo-registry`, `pip`) prune a whole cache directory
+when it has been idle past the policy; add `paths = ["…"]` to any of them to cover a non-standard
+cache location.
 
 Each adapter is its own crate behind a cargo feature (all on by default), plus a `decision-log`
 feature (default on) for the `why`-command audit trail. Trim any of them for a leaner build.

@@ -1131,10 +1131,15 @@ Each lands green and independently reviewable:
 
 ## 21. Future adapter ideas
 
+Three global-cache adapters have since shipped (`pnpm`, `cargo-registry`, `pip`), built on a
+shared `disk-saver-cachedir` engine — a well-known cache directory treated as one coarse
+`Class::Cache` candidate, aged by its most recent activity and removed wholesale past policy,
+with a `paths` config knob for non-standard locations. The same engine makes the remaining
+cache-dir ideas below cheap to add.
+
 The trait makes these cheap to add later, in rough priority order: Homebrew
-(`brew cleanup` + cache), Xcode `DerivedData`, `~/.cargo/registry` + sccache,
-pnpm/npm/yarn global stores, `pip`/`uv` global caches, Go module/build cache
-(`~/go/pkg/mod`, `go clean -cache`), container image stores for podman/nerdctl,
-JetBrains/VS Code caches, `journalctl --vacuum-size` (Linux), old kernels/apt/dnf
-caches (Linux, needs root story), generic `CACHEDIR.TAG` sweeper, and an opt-in
-`~/Downloads` adapter (UserData class, `confirm = true` always, long ages).
+(`brew cleanup` + cache), Xcode `DerivedData`, npm/yarn global stores, sccache, `uv`
+global cache, Go module/build cache (`~/go/pkg/mod`, `go clean -cache`), container image
+stores for podman/nerdctl, JetBrains/VS Code caches, `journalctl --vacuum-size` (Linux),
+old kernels/apt/dnf caches (Linux, needs root story), generic `CACHEDIR.TAG` sweeper, and
+an opt-in `~/Downloads` adapter (UserData class, `confirm = true` always, long ages).

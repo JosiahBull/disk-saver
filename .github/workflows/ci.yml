@@ -68,4 +68,4 @@ jobs:
       # decision-log compiled OUT of core.
       - run: cargo test -p disk-saver-core --no-default-features
       # All adapters, decision-log OFF (exercises the compiled-out `why` path).
-      - run: cargo test -p disk-saver --no-default-features --features docker,node-modules,rust-target,python-cache,trash
+      - run: cargo test -p disk-saver --no-default-features --features docker,node-modules,rust-target,python-cache,pnpm,cargo-registry,pip,trash

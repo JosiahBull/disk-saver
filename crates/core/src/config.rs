@@ -470,6 +470,20 @@ max_age       = "30d"
 min_age       = "7d"
 include_venvs = false
 
+# Global tool caches (regenerable; pruned wholesale when idle). Each takes an
+# optional `paths = [...]` to add non-standard cache locations.
+[adapters.pnpm]
+max_age = "30d"       # pnpm store + metadata cache (store located via `pnpm store path`)
+min_age = "7d"
+
+[adapters.cargo-registry]
+max_age = "30d"       # ~/.cargo registry/cache, registry/src, git/db, git/checkouts
+min_age = "7d"
+
+[adapters.pip]
+max_age = "30d"       # pip's download/wheel cache under the platform cache dir
+min_age = "7d"
+
 [adapters.trash]
 max_age = "60d"
 min_age = "7d"

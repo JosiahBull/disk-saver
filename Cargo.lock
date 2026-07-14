@@ -223,8 +223,11 @@ dependencies = [
  "assert_cmd",
  "bytesize",
  "clap",
+ "disk-saver-adapter-cargo-registry",
  "disk-saver-adapter-docker",
  "disk-saver-adapter-node-modules",
+ "disk-saver-adapter-pip",
+ "disk-saver-adapter-pnpm",
  "disk-saver-adapter-python-cache",
  "disk-saver-adapter-rust-target",
  "disk-saver-adapter-trash",
@@ -241,6 +244,17 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "disk-saver-adapter-cargo-registry"
+version = "0.1.0"
+dependencies = [
+ "disk-saver-cachedir",
+ "disk-saver-core",
+ "disk-saver-kv",
+ "disk-saver-platform",
+ "toml",
 ]
 
 [[package]]
@@ -275,6 +289,28 @@ dependencies = [
  "serde",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "disk-saver-adapter-pip"
+version = "0.1.0"
+dependencies = [
+ "disk-saver-cachedir",
+ "disk-saver-core",
+ "disk-saver-kv",
+ "disk-saver-platform",
+ "toml",
+]
+
+[[package]]
+name = "disk-saver-adapter-pnpm"
+version = "0.1.0"
+dependencies = [
+ "disk-saver-cachedir",
+ "disk-saver-core",
+ "disk-saver-kv",
+ "disk-saver-platform",
+ "toml",
 ]
 
 [[package]]
@@ -318,6 +354,19 @@ dependencies = [
  "disk-saver-kv",
  "disk-saver-platform",
  "globset",
+ "humantime-serde",
+ "serde",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "disk-saver-cachedir"
+version = "0.1.0"
+dependencies = [
+ "disk-saver-core",
+ "disk-saver-kv",
+ "disk-saver-platform",
  "humantime-serde",
  "serde",
  "toml",
