@@ -91,6 +91,10 @@ pub struct AdapterReport {
     pub status: AdapterStatus,
     /// Candidates returned by `plan`.
     pub candidates: usize,
+    /// Estimated reclaimable bytes across all planned candidates (an estimate —
+    /// shared docker layers, hardlinks and pnpm stores make it approximate; the
+    /// engine re-measures real free space rather than trusting it).
+    pub candidate_bytes: u64,
     /// Items removed.
     pub removed: usize,
     /// Bytes removed (sum of `Removed` outcome estimates).
@@ -134,6 +138,13 @@ impl RunReport {
             .fold(0u64, |acc, a| acc.saturating_add(a.bytes_removed))
     }
 
+    /// Total estimated reclaimable bytes across all planned candidates.
+    pub fn candidate_bytes(&self) -> u64 {
+        self.adapters
+            .iter()
+            .fold(0u64, |acc, a| acc.saturating_add(a.candidate_bytes))
+    }
+
     /// Whether any adapter ended in [`AdapterStatus::Failed`] (exit code 2).
     pub fn any_failed(&self) -> bool {
         self.adapters
@@ -170,6 +181,7 @@ impl AdapterRun {
                 name: name.to_owned(),
                 status: AdapterStatus::Ok,
                 candidates: 0,
+                candidate_bytes: 0,
                 removed: 0,
                 bytes_removed: 0,
                 skipped: 0,
@@ -292,6 +304,9 @@ impl<'a> Engine<'a> {
                 match self.run_phase(run.idx, pressure, |a, ctx| a.plan(ctx)) {
                     Ok(cands) => {
                         run.report.candidates = cands.len();
+                        run.report.candidate_bytes = cands
+                            .iter()
+                            .fold(0u64, |acc, c| acc.saturating_add(c.bytes));
                         run.planned = cands;
                     }
                     Err(skip) => run.report.status = skip.into(),

@@ -51,7 +51,6 @@ predicates = "3"
 opt-level = 3
 lto = true
 codegen-units = 1
-panic = "abort"
 strip = true
 
 # Debug profile for release builds, with debug info + assertions, but still optimized.
@@ -60,5 +59,4 @@ strip = true
 inherits = "release"
 debug = true
 debug-assertions = true
-panic = "unwind"
 strip = false

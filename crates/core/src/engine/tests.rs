@@ -264,10 +264,13 @@ fn normal_executes_each_adapters_own_unflagged_candidates() {
 
     assert_eq!(report.pressure, "normal");
     assert_eq!(find(&report, "a").candidates, 2);
+    assert_eq!(find(&report, "a").candidate_bytes, 30); // 10 + 20, estimated reclaimable
     assert_eq!(find(&report, "a").removed, 2);
     assert_eq!(find(&report, "a").bytes_removed, 30);
+    assert_eq!(find(&report, "b").candidate_bytes, 30);
     assert_eq!(find(&report, "b").removed, 1);
     assert_eq!(report.bytes_removed(), 60);
+    assert_eq!(report.candidate_bytes(), 60);
     assert!(!report.any_failed());
 
     let ev = events(&log);

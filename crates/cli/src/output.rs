@@ -41,15 +41,16 @@ pub fn print_run_report(report: &RunReport) {
     } else {
         println!();
         println!(
-            "{:<16} {:<24} {:>5} {:>5} {:>10} {:>4} {:>5} {:>4}",
-            "adapter", "status", "cand", "rm", "freed", "q", "skip", "fail",
+            "{:<16} {:<24} {:>5} {:>10} {:>5} {:>10} {:>4} {:>5} {:>4}",
+            "adapter", "status", "cand", "size", "rm", "freed", "q", "skip", "fail",
         );
         for a in &report.adapters {
             println!(
-                "{:<16} {:<24} {:>5} {:>5} {:>10} {:>4} {:>5} {:>4}",
+                "{:<16} {:<24} {:>5} {:>10} {:>5} {:>10} {:>4} {:>5} {:>4}",
                 truncate(&a.name, 16),
                 truncate(&status_label(&a.status), 24),
                 a.candidates,
+                bytes(a.candidate_bytes),
                 a.removed,
                 bytes(a.bytes_removed),
                 a.queued,
@@ -60,6 +61,14 @@ pub fn print_run_report(report: &RunReport) {
     }
 
     println!();
+    let total_candidates: usize = report.adapters.iter().map(|a| a.candidates).sum();
+    if total_candidates > 0 {
+        println!(
+            "{} candidate(s), ~{} reclaimable (estimate)",
+            total_candidates,
+            bytes(report.candidate_bytes()),
+        );
+    }
     if !report.dry_run {
         println!(
             "freed {} total; {} now free",
