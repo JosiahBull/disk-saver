@@ -84,6 +84,10 @@ pub struct RunArgs {
     /// Override measured disk pressure.
     #[arg(long, value_enum)]
     pub pressure: Option<PressureArg>,
+
+    /// Also print a per-candidate table (project/path, size, age, class) per adapter.
+    #[arg(long)]
+    pub detailed: bool,
 }
 
 /// Arguments to `plan` (a dry run). Mirrors [`RunArgs`] minus `--dry-run`.
@@ -96,6 +100,10 @@ pub struct PlanArgs {
     /// Override measured disk pressure.
     #[arg(long, value_enum)]
     pub pressure: Option<PressureArg>,
+
+    /// Also print a per-candidate table (project/path, size, age, class) per adapter.
+    #[arg(long)]
+    pub detailed: bool,
 }
 
 /// The `--pressure` override values.

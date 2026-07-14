@@ -22,6 +22,8 @@ pub struct RunParams {
     pub adapters: Vec<String>,
     /// Pressure override.
     pub pressure: Option<Pressure>,
+    /// Print a per-candidate detail table.
+    pub detailed: bool,
 }
 
 impl RunParams {
@@ -32,6 +34,7 @@ impl RunParams {
             force: args.force,
             adapters: args.adapter,
             pressure: args.pressure.map(|p| p.to_pressure()),
+            detailed: args.detailed,
         }
     }
 
@@ -49,6 +52,7 @@ impl RunParams {
             force: true,
             adapters: args.adapter,
             pressure: args.pressure.map(|p| p.to_pressure()),
+            detailed: args.detailed,
         }
     }
 }
@@ -92,7 +96,7 @@ fn run_locked(app: &App, params: &RunParams) -> Result<u8> {
     if app.json {
         output::print_json(&report)?;
     } else {
-        output::print_run_report(&report);
+        output::print_run_report(&report, params.detailed);
     }
 
     Ok(if report.any_failed() { 2 } else { 0 })

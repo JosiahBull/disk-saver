@@ -120,3 +120,45 @@ fn plan_json_emits_the_target_candidate_and_deletes_nothing() {
     );
     assert!(target.exists());
 }
+
+#[test]
+fn plan_detailed_lists_the_project_path_per_candidate() {
+    let home = TempDir::new().unwrap();
+    let proj = home.path().join("proj");
+    let target = proj.join("target");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(proj.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+    std::fs::write(
+        target.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    .unwrap();
+
+    let state = home.path().join("state");
+    let config = home.path().join("config.toml");
+    let toml = format!(
+        "[global]\nstate_dir = \"{state}\"\n\n\
+         [adapters.docker]\nenabled = false\n\
+         [adapters.node-modules]\nenabled = false\n\
+         [adapters.python-cache]\nenabled = false\n\
+         [adapters.trash]\nenabled = false\n\n\
+         [adapters.rust-target]\nroots = [\"{roots}\"]\nmax_age = \"0s\"\nmin_age = \"0s\"\n",
+        state = state.display(),
+        roots = proj.display(),
+    );
+    std::fs::write(&config, toml).unwrap();
+
+    cmd(home.path(), &config)
+        .args(["plan", "--pressure", "normal", "--detailed"])
+        .assert()
+        .success()
+        // The per-adapter detail section and the candidate's project path.
+        .stdout(predicate::str::contains("── rust-target"))
+        .stdout(predicate::str::contains("class"))
+        .stdout(predicate::str::contains(
+            proj.to_string_lossy().into_owned(),
+        ));
+
+    // Still a dry run — nothing deleted.
+    assert!(target.join("CACHEDIR.TAG").exists());
+}

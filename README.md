@@ -58,8 +58,8 @@ than the policy. Use `disk-saver run --dry-run` or `disk-saver plan` any time to
 
 | Command | What it does |
 |---|---|
-| `run [--dry-run] [--force] [--adapter <name>…] [--pressure <tier>]` | One cleanup cycle. `--force` bypasses the throttle gate; `--pressure` overrides measurement. |
-| `plan` | Alias for `run --dry-run`: the candidate table, no changes. |
+| `run [--dry-run] [--force] [--adapter <name>…] [--pressure <tier>] [--detailed]` | One cleanup cycle. `--force` bypasses the throttle gate; `--pressure` overrides measurement. |
+| `plan [--pressure <tier>] [--detailed]` | Alias for `run --dry-run`: the candidate table, no changes. `--detailed` adds a per-candidate table (project/path, size, age, class) for each adapter. |
 | `review [--list] [--approve <id>…] [--approve-all [--adapter <n>]] [--json]` | Inspect and resolve the approvals queue. Interactive by default. |
 | `status` | Disk usage vs thresholds, cadence, pending approvals, recent run summaries. |
 | `why <query>` | Replay every recorded decision about an item *(requires the `decision-log` feature)*. |

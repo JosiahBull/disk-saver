@@ -82,6 +82,25 @@ pub enum AdapterStatus {
     Failed(String),
 }
 
+/// A display-friendly projection of one planned [`Candidate`], carried in the
+/// report so the CLI can show a detailed per-item table (`plan --detailed`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateReport {
+    /// Adapter-scoped id (path, docker image id, …).
+    pub id: String,
+    /// Human-readable one-liner (e.g. "node_modules in /home/u/app").
+    pub label: String,
+    /// Estimated reclaimable bytes for this item.
+    pub bytes: u64,
+    /// Age at plan time (`now - last_used`), in seconds.
+    pub age_secs: u64,
+    /// Impact class.
+    pub class: Class,
+    /// Whether this item would be routed to the approvals queue instead of
+    /// auto-deleted.
+    pub requires_confirmation: bool,
+}
+
 /// Per-adapter summary for a run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdapterReport {
@@ -94,7 +113,14 @@ pub struct AdapterReport {
     /// Estimated reclaimable bytes across all planned candidates (an estimate —
     /// shared docker layers, hardlinks and pnpm stores make it approximate; the
     /// engine re-measures real free space rather than trusting it).
+    #[serde(default)]
     pub candidate_bytes: u64,
+    /// Per-candidate detail (for `plan --detailed`). Populated on the returned
+    /// report but stripped before persisting to the run-report ring buffer, so
+    /// `status` history stays lean. `#[serde(default)]` keeps older persisted
+    /// reports (without this field) readable.
+    #[serde(default)]
+    pub candidates_detail: Vec<CandidateReport>,
     /// Items removed.
     pub removed: usize,
     /// Bytes removed (sum of `Removed` outcome estimates).
@@ -182,6 +208,7 @@ impl AdapterRun {
                 status: AdapterStatus::Ok,
                 candidates: 0,
                 candidate_bytes: 0,
+                candidates_detail: Vec::new(),
                 removed: 0,
                 bytes_removed: 0,
                 skipped: 0,
@@ -307,6 +334,17 @@ impl<'a> Engine<'a> {
                         run.report.candidate_bytes = cands
                             .iter()
                             .fold(0u64, |acc, c| acc.saturating_add(c.bytes));
+                        run.report.candidates_detail = cands
+                            .iter()
+                            .map(|c| CandidateReport {
+                                id: c.id.clone(),
+                                label: c.label.clone(),
+                                bytes: c.bytes,
+                                age_secs: c.age(now).as_secs(),
+                                class: c.class,
+                                requires_confirmation: c.requires_confirmation,
+                            })
+                            .collect();
                         run.planned = cands;
                     }
                     Err(skip) => run.report.status = skip.into(),
@@ -583,7 +621,13 @@ impl<'a> Engine<'a> {
     fn persist_report(&self, report: &RunReport, now: SystemTime) {
         let eng = self.store.bucket("_engine");
         let seq: u64 = eng.get("report_seq").ok().flatten().unwrap_or(0);
-        let _ = eng.set(&format!("report:{seq}"), report, now);
+        // Persist a lean copy: per-candidate detail is only for live `--detailed`
+        // rendering, not for the `status` history ring buffer.
+        let mut lean = report.clone();
+        for a in &mut lean.adapters {
+            a.candidates_detail.clear();
+        }
+        let _ = eng.set(&format!("report:{seq}"), &lean, now);
         let _ = eng.set("report_seq", &seq.wrapping_add(1), now);
         // Ring buffer: keep the most recent ~50 reports.
         if seq >= 50 {

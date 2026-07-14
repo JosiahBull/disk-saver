@@ -273,6 +273,16 @@ fn normal_executes_each_adapters_own_unflagged_candidates() {
     assert_eq!(report.candidate_bytes(), 60);
     assert!(!report.any_failed());
 
+    // Per-candidate detail is populated (for `plan --detailed`).
+    let a_detail = &find(&report, "a").candidates_detail;
+    assert_eq!(a_detail.len(), 2);
+    let ids: Vec<&str> = a_detail.iter().map(|c| c.id.as_str()).collect();
+    assert!(ids.contains(&"a1") && ids.contains(&"a2"));
+    let a1 = a_detail.iter().find(|c| c.id == "a1").unwrap();
+    assert_eq!(a1.bytes, 10);
+    assert_eq!(a1.class, Class::Cache);
+    assert_eq!(a1.age_secs, 100 * 24 * 3600);
+
     let ev = events(&log);
     assert!(ev.contains(&"exec:a:a1".to_string()));
     assert!(ev.contains(&"exec:a:a2".to_string()));

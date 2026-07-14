@@ -4,7 +4,7 @@
 //! it is a stable scripting contract; the human renderers are free to change.
 
 use anyhow::Result;
-use disk_saver_core::{AdapterStatus, RunReport};
+use disk_saver_core::{AdapterStatus, Class, RunReport};
 
 /// Format a byte count for human display (e.g. `1.2 GB`).
 pub fn bytes(n: u64) -> String {
@@ -17,8 +17,10 @@ pub fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
     Ok(())
 }
 
-/// Render a [`RunReport`] as a human-readable summary.
-pub fn print_run_report(report: &RunReport) {
+/// Render a [`RunReport`] as a human-readable summary. When `detailed`, also
+/// print a per-candidate table for each adapter (the projects/paths being
+/// reclaimed, biggest first).
+pub fn print_run_report(report: &RunReport, detailed: bool) {
     let mode = if report.dry_run { " (dry-run)" } else { "" };
     println!("disk-saver: {} pressure{}", report.pressure, mode);
 
@@ -81,6 +83,69 @@ pub fn print_run_report(report: &RunReport) {
             "{} item(s) await approval — run `disk-saver review`",
             report.queued_items
         );
+    }
+
+    if detailed {
+        print_candidate_detail(report);
+    }
+}
+
+/// Print a per-adapter table of the individual candidates (project/path, size,
+/// age, class, confirm), biggest first. Used by `plan --detailed`.
+fn print_candidate_detail(report: &RunReport) {
+    for a in &report.adapters {
+        if a.candidates_detail.is_empty() {
+            continue;
+        }
+        let mut items: Vec<_> = a.candidates_detail.iter().collect();
+        items.sort_by_key(|c| std::cmp::Reverse(c.bytes));
+
+        println!();
+        println!(
+            "── {} ({} candidate(s), ~{}) ──",
+            a.name,
+            a.candidates,
+            bytes(a.candidate_bytes),
+        );
+        println!(
+            "  {:>10} {:>6} {:<12} {:>7}  item",
+            "size", "age", "class", "confirm",
+        );
+        for c in items {
+            println!(
+                "  {:>10} {:>6} {:<12} {:>7}  {}",
+                bytes(c.bytes),
+                human_age(c.age_secs),
+                class_label(c.class),
+                if c.requires_confirmation { "yes" } else { "no" },
+                c.label,
+            );
+        }
+    }
+}
+
+/// A short label for an impact [`Class`].
+fn class_label(class: Class) -> &'static str {
+    match class {
+        Class::Rebuildable => "rebuildable",
+        Class::Cache => "cache",
+        Class::UserData => "userdata",
+    }
+}
+
+/// A compact human age like `45d`, `3h`, or `12m` from a second count.
+fn human_age(secs: u64) -> String {
+    const MIN: u64 = 60;
+    const HOUR: u64 = 60 * MIN;
+    const DAY: u64 = 24 * HOUR;
+    if secs >= DAY {
+        format!("{}d", secs / DAY)
+    } else if secs >= HOUR {
+        format!("{}h", secs / HOUR)
+    } else if secs >= MIN {
+        format!("{}m", secs / MIN)
+    } else {
+        format!("{secs}s")
     }
 }
 

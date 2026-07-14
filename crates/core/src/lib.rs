@@ -31,7 +31,9 @@ pub use config::{
 pub use decision::{Decision, DecisionKind, DecisionLog};
 #[cfg(feature = "decision-log")]
 pub use decision::{RecordedDecision, read_decisions};
-pub use engine::{AdapterReport, AdapterStatus, Engine, RunOptions, RunReport, classify_pressure};
+pub use engine::{
+    AdapterReport, AdapterStatus, CandidateReport, Engine, RunOptions, RunReport, classify_pressure,
+};
 pub use error::{AdapterError, ConfigError, parse_adapter_config};
 pub use retention::RetentionPolicy;
 pub use throttle::run_due;
