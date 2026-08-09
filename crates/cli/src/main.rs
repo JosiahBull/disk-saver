@@ -75,7 +75,13 @@ fn dispatch(cli: Cli) -> Result<u8> {
         Command::Status => commands::status::run(&app),
         #[cfg(feature = "decision-log")]
         Command::Why(args) => commands::why::run(&app, &args.query),
-        Command::Doctor => commands::doctor::run(&app),
+        Command::Doctor(args) => {
+            if args.grant_access {
+                commands::doctor::grant_access(&app)
+            } else {
+                commands::doctor::run(&app)
+            }
+        }
         Command::Config(args) => match args.action {
             ConfigAction::Init => unreachable!("`config init` is handled before config load"),
             ConfigAction::Check => commands::config::check(&app),

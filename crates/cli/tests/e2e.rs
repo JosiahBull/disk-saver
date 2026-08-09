@@ -162,3 +162,25 @@ fn plan_detailed_lists_the_project_path_per_candidate() {
     // Still a dry run — nothing deleted.
     assert!(target.join("CACHEDIR.TAG").exists());
 }
+
+#[test]
+fn doctor_grant_access_does_not_mistake_a_missing_trash_for_a_denied_one() {
+    let home = TempDir::new().unwrap();
+    let config = home.path().join("config.toml");
+    cmd(home.path(), &config)
+        .args(["config", "init"])
+        .assert()
+        .success();
+
+    // The sandboxed HOME has no trash directory at all. `NotFound` is not a
+    // permission problem, so the command must report access as fine — and in
+    // doing so return before it would open System Settings, which is what keeps
+    // this test safe to run unattended.
+    cmd(home.path(), &config)
+        .args(["doctor", "--grant-access"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("already granted").or(predicate::str::contains("macOS-only")),
+        );
+}

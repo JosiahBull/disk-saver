@@ -54,7 +54,7 @@ pub enum Command {
     Why(WhyArgs),
 
     /// Validate config and probe every enabled adapter's readiness.
-    Doctor,
+    Doctor(DoctorArgs),
 
     /// Manage the configuration file.
     Config(ConfigArgs),
@@ -176,6 +176,16 @@ pub enum ConfigAction {
     Check,
     /// Print the effective configuration.
     Show,
+}
+
+/// Arguments to `doctor`.
+#[derive(Debug, Args)]
+pub struct DoctorArgs {
+    /// Help grant the OS permissions disk-saver is missing (macOS: Full Disk
+    /// Access, needed to read the trash). Reports what is missing and opens the
+    /// relevant System Settings pane.
+    #[arg(long)]
+    pub grant_access: bool,
 }
 
 /// Arguments to `schedule` (Stage 2 fills in the body).
