@@ -173,6 +173,11 @@ fn build_units(app: &App, exe: &Path) -> Vec<Unit> {
         <string>{exe}</string>
         <string>run</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{path}</string>
+    </dict>
     <key>StartInterval</key>
     <integer>{secs}</integer>
     <key>StandardErrorPath</key>
@@ -183,11 +188,24 @@ fn build_units(app: &App, exe: &Path) -> Vec<Unit> {
 </plist>
 "#,
         exe = xml_escape(&exe.display().to_string()),
+        path = LAUNCHD_PATH,
         secs = app.config.schedule.check_every.as_secs(),
         err = xml_escape(&err_log.display().to_string()),
     );
     vec![Unit { path, contents }]
 }
+
+/// `PATH` handed to the launchd job.
+///
+/// launchd does not read a login shell, so without this the job runs with the
+/// bare `/usr/bin:/bin:/usr/sbin:/sbin`. Adapters that shell out to a tool
+/// installed elsewhere — `docker` under `/usr/local/bin`, `pnpm` and `git` under
+/// Homebrew — then probe as *unavailable* on every scheduled run while still
+/// reporting reachable from an interactive `doctor`, which makes the failure
+/// close to invisible. Both Homebrew prefixes are listed so one plist serves
+/// Intel and Apple Silicon.
+#[cfg(target_os = "macos")]
+const LAUNCHD_PATH: &str = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// Build the unit file(s) for the current OS. The interval-carrying unit is
 /// always last.
