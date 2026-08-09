@@ -141,11 +141,19 @@ impl Choices {
     }
 }
 
-/// Parse the comma-separated `roots` field into a TOML array literal, e.g.
+/// Parse the `roots` field into a TOML array literal, e.g.
 /// `~/dev, ~/work` → `["~/dev", "~/work"]`. Empty → `["~"]` (the built-in default).
+///
+/// Separators are commas *and* whitespace: the prompt is free text, and typing
+/// the list space-separated is at least as natural as comma-separated. Splitting
+/// on commas alone silently yielded a single-element array holding one path with
+/// spaces in it — a directory that never exists, so every root-taking adapter
+/// scanned nothing and reported zero candidates forever. The cost of this is
+/// that a root whose own name contains a space can't be entered here; it has to
+/// be written into the TOML by hand afterwards.
 fn roots_array(raw: &str) -> String {
     let items: Vec<String> = raw
-        .split(',')
+        .split(|c: char| c == ',' || c.is_whitespace())
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| format!("\"{}\"", s.replace('"', "")))
@@ -199,6 +207,38 @@ mod tests {
         assert_eq!(roots_array("~/dev"), "[\"~/dev\"]");
         assert_eq!(roots_array(" ~/dev , ~/work "), "[\"~/dev\", \"~/work\"]");
         assert_eq!(roots_array(""), "[\"~\"]");
+    }
+
+    #[test]
+    fn roots_array_splits_on_whitespace_as_well_as_commas() {
+        // The regression: space-separated input used to collapse into a single
+        // element holding one path with spaces in it, which names no directory.
+        assert_eq!(
+            roots_array("~/work ~/personal ~/external"),
+            "[\"~/work\", \"~/personal\", \"~/external\"]"
+        );
+        // Mixed separators, runs of whitespace, and tabs all collapse.
+        assert_eq!(
+            roots_array("~/work,  ~/personal\t~/external"),
+            "[\"~/work\", \"~/personal\", \"~/external\"]"
+        );
+        // Whitespace-only input is still the built-in default, not an empty array.
+        assert_eq!(roots_array("   \t "), "[\"~\"]");
+    }
+
+    #[test]
+    fn space_separated_roots_reach_the_config_as_separate_entries() {
+        let choices = Choices {
+            preset: Preset::Balanced,
+            enabled: vec![true; ADAPTERS.len()],
+            roots: "~/work ~/personal".into(),
+        };
+        let cfg = disk_saver_core::Config::parse(&render_config(&choices))
+            .expect("generated config must parse");
+        let roots = cfg.adapters["rust-target"].rest.as_ref().unwrap()["roots"]
+            .as_array()
+            .expect("roots must be an array");
+        assert_eq!(roots.len(), 2, "each root must be its own entry: {roots:?}");
     }
 
     #[test]
