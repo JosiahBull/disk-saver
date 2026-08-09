@@ -52,6 +52,11 @@ pub struct CacheConfig {
     #[serde(with = "humantime_serde")]
     pub max_age: Duration,
     /// Scavenge floor: never prune a cache used more recently than this.
+    /// Defaults to 6 hours.
+    ///
+    /// Longer than the build-artifact adapters' 1h: refilling one of these
+    /// caches means re-downloading from a registry, so a cache touched earlier
+    /// today is worth more than a stale `target/` of the same size.
     #[serde(with = "humantime_serde")]
     pub min_age: Duration,
     /// Route to the approvals queue instead of auto-deleting (default `false` —
@@ -66,7 +71,7 @@ impl Default for CacheConfig {
     fn default() -> Self {
         CacheConfig {
             max_age: Duration::from_secs(30 * 24 * 60 * 60),
-            min_age: Duration::from_secs(7 * 24 * 60 * 60),
+            min_age: Duration::from_secs(6 * 60 * 60),
             confirm: false,
             paths: Vec::new(),
         }
@@ -290,13 +295,18 @@ mod tests {
 
     #[test]
     fn min_age_floor_holds_under_scavenge() {
-        // Used 3 days ago; min_age is 7d → not eligible even under scavenge.
+        // Used 3 days ago; min_age pinned to 7d → not eligible even under
+        // scavenge. Pinned rather than defaulted: the shipped floor is 6h, which
+        // this day-scale fixture would clear without exercising the floor.
         let fake = FakePlatform::new().with_now(t(400)).with_file(
             "~/.cache/tool/blob",
             vec![0u8; 4096],
             t(397),
         );
-        let mut a = adapter(CacheConfig::default());
+        let mut a = adapter(CacheConfig {
+            min_age: Duration::from_secs(7 * 24 * 60 * 60),
+            ..CacheConfig::default()
+        });
         let plan = ctx_run(&fake, Pressure::Scavenge { need: 1 }, |ctx| {
             a.plan(ctx).unwrap()
         });

@@ -101,7 +101,10 @@ struct DockerConfig {
     /// Normal-mode age threshold (default 7 days).
     #[serde(with = "humantime_serde")]
     max_age: Duration,
-    /// Scavenge floor: never touch anything younger than this (default 2 days).
+    /// Scavenge floor: never touch anything younger than this (default 1 day).
+    ///
+    /// The longest floor of any auto-deleting adapter: a deleted image is a
+    /// multi-gigabyte pull to get back, and often one you need while offline.
     #[serde(with = "humantime_serde")]
     min_age: Duration,
     /// Glob patterns for images/containers to never propose.
@@ -117,7 +120,7 @@ impl Default for DockerConfig {
     fn default() -> Self {
         DockerConfig {
             max_age: Duration::from_secs(7 * 24 * 60 * 60),
-            min_age: Duration::from_secs(2 * 24 * 60 * 60),
+            min_age: Duration::from_secs(24 * 60 * 60),
             protect: Vec::new(),
             remove_exited_containers: true,
             confirm: false,

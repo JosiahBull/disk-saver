@@ -312,6 +312,7 @@ impl<'a> Engine<'a> {
         }
 
         let mut free_after = free_before;
+        let mut young = YoungPrune::default();
         let queued_items;
 
         if !pressure.deletes() {
@@ -384,7 +385,10 @@ impl<'a> Engine<'a> {
             // 10. EXECUTE (never in dry-run; never flagged candidates).
             if !opts.dry_run {
                 if let Pressure::Scavenge { .. } = pressure {
-                    free_after = self.scavenge(&mut runs, pressure, &disk_path, free_before, total);
+                    let (free, pruned) =
+                        self.scavenge(&mut runs, pressure, &disk_path, free_before, total);
+                    free_after = free;
+                    young = pruned;
                 } else {
                     self.execute_normal(&mut runs, pressure);
                     free_after = self
@@ -416,6 +420,7 @@ impl<'a> Engine<'a> {
             self.handle_scavenge_warning(below_warn, free_before, total, now);
             self.maybe_notify_approvals(queued_items, now);
             self.maybe_notify_scavenge_ran(pressure, free_before, free_after, total, now);
+            self.maybe_notify_aggressive_prune(&young, now);
         }
 
         report
@@ -502,7 +507,8 @@ impl<'a> Engine<'a> {
     /// Scavenge mode: impact waves (Rebuildable → Cache → UserData), oldest-first
     /// within a wave, per-adapter batches of ~10, re-measuring real free space
     /// after each batch and stopping once `scavenge_target` is reached. Returns
-    /// the final free-space measurement.
+    /// the final free-space measurement and a tally of anything deleted while
+    /// still young (see [`YoungPrune`]).
     fn scavenge(
         &mut self,
         runs: &mut [AdapterRun],
@@ -510,10 +516,12 @@ impl<'a> Engine<'a> {
         disk_path: &Path,
         free_before: u64,
         total: u64,
-    ) -> u64 {
+    ) -> (u64, YoungPrune) {
         let decisions = self.decisions;
         let now = self.platform.now();
         let target = self.config.global.scavenge_target.bytes(total);
+        let young_floor = self.config.global.aggressive_prune_age;
+        let mut young = YoungPrune::default();
         let mut free_now = free_before;
 
         for class in [Class::Rebuildable, Class::Cache, Class::UserData] {
@@ -550,6 +558,11 @@ impl<'a> Engine<'a> {
                 }
                 let idx = runs[ri].idx;
                 let res = self.run_phase(idx, pressure, |a, ctx| a.execute(ctx, &batch));
+                // Tally young casualties before `res` is consumed: the batch is
+                // the only place a removed id can be matched back to its age.
+                if let Ok(outcomes) = &res {
+                    young.absorb(&batch, outcomes, &runs[ri].name, now, young_floor);
+                }
                 apply_outcomes(&mut runs[ri], res, decisions, now, pressure);
                 // Real measurement, not candidate byte-estimates. If the disk can
                 // no longer be measured, STOP scavenging: continuing blind would
@@ -557,12 +570,12 @@ impl<'a> Engine<'a> {
                 // burn through every remaining wave).
                 match self.measure(disk_path) {
                     Some(u) => free_now = u.available,
-                    None => return free_now,
+                    None => return (free_now, young),
                 }
                 i = j;
             }
         }
-        free_now
+        (free_now, young)
     }
 
     // ── engine-owned KV state (`_engine` bucket) ────────────────────────
@@ -750,6 +763,35 @@ impl<'a> Engine<'a> {
         );
     }
 
+    /// Alert that scavenge deleted things a routine run would have left alone.
+    ///
+    /// Fires only when something young was actually removed, so a scavenge that
+    /// finds nothing but stale artifacts stays quiet. Uses the ordinary
+    /// `min_gap` dedupe rather than forcing a transition: under sustained
+    /// pressure this condition holds every hour, and an hourly critical alert
+    /// would train the user to ignore it.
+    fn maybe_notify_aggressive_prune(&self, young: &YoungPrune, now: SystemTime) {
+        let Some((age, adapter)) = &young.youngest else {
+            return;
+        };
+        let body = format!(
+            "Freed {} by deleting {} item(s) newer than {} — youngest {} old ({adapter}). \
+             Rebuilds will be slower until these regenerate.",
+            human_bytes(young.bytes),
+            young.count,
+            humantime::format_duration(self.config.global.aggressive_prune_age),
+            humantime::format_duration(round_age(*age)),
+        );
+        self.notify_event(
+            NotificationEvent::AggressivePrune,
+            now,
+            "disk-saver: aggressive prune".to_owned(),
+            body,
+            Urgency::Critical,
+            false,
+        );
+    }
+
     fn maybe_notify_scavenge_ran(
         &self,
         pressure: Pressure,
@@ -783,6 +825,58 @@ impl<'a> Engine<'a> {
     }
 }
 
+/// What a scavenge pass deleted that was still young — the evidence behind
+/// [`NotificationEvent::AggressivePrune`].
+///
+/// "Young" is measured against `global.aggressive_prune_age`, which is a
+/// *reporting* threshold only. Whether an item could be deleted at all was
+/// already settled by its adapter's `min_age`; this just notices when the
+/// result is something the user would not expect a routine run to touch.
+#[derive(Debug, Default)]
+struct YoungPrune {
+    /// How many removed items were younger than the threshold.
+    count: usize,
+    /// Their combined reclaimed bytes.
+    bytes: u64,
+    /// The youngest age seen and the adapter that owned it — the single most
+    /// useful detail for a user asking "why is my build cold?".
+    youngest: Option<(Duration, String)>,
+}
+
+impl YoungPrune {
+    /// Fold one executed batch into the tally. `outcomes` are matched back to
+    /// `batch` by id, since [`Outcome::Removed`] carries no age of its own.
+    fn absorb(
+        &mut self,
+        batch: &[Candidate],
+        outcomes: &[Outcome],
+        adapter: &str,
+        now: SystemTime,
+        floor: Duration,
+    ) {
+        for o in outcomes {
+            let Outcome::Removed { id, bytes } = o else {
+                continue;
+            };
+            let Some(c) = batch.iter().find(|c| &c.id == id) else {
+                continue;
+            };
+            // A clock that runs backwards yields Err here; treat that as age 0
+            // rather than skipping, so a bad clock over-reports instead of
+            // silently hiding an aggressive prune.
+            let age = now.duration_since(c.last_used).unwrap_or_default();
+            if age >= floor {
+                continue;
+            }
+            self.count += 1;
+            self.bytes = self.bytes.saturating_add(*bytes);
+            if self.youngest.as_ref().is_none_or(|(y, _)| age < *y) {
+                self.youngest = Some((age, adapter.to_owned()));
+            }
+        }
+    }
+}
+
 /// The names of adapters that ran to completion (`is_ok()`) this cycle — the
 /// set whose vanished approvals entries may be GC'd (see [`Approvals::rebuild`]).
 fn authoritative_names(runs: &[AdapterRun]) -> BTreeSet<String> {
@@ -804,6 +898,22 @@ fn human_bytes(b: u64) -> String {
     bytesize::ByteSize(b).to_string()
 }
 
+/// Truncate an age to whole minutes for display.
+///
+/// `humantime` prints every component it has, so an unrounded age reads
+/// "1h 12m 33s 481ms" in a notification. Ages under a minute keep their
+/// seconds — "0s" would look like a bug in exactly the case a user is most
+/// likely to be alarmed by.
+fn round_age(age: Duration) -> Duration {
+    const MINUTE: u64 = 60;
+    let secs = age.as_secs();
+    if secs < MINUTE {
+        Duration::from_secs(secs)
+    } else {
+        Duration::from_secs(secs - secs % MINUTE)
+    }
+}
+
 /// Stable snake_case key for a notification event (for dedupe bookkeeping).
 fn event_key(e: NotificationEvent) -> &'static str {
     match e {
@@ -811,6 +921,7 @@ fn event_key(e: NotificationEvent) -> &'static str {
         NotificationEvent::ScavengeRan => "scavenge_ran",
         NotificationEvent::ApprovalsPending => "approvals_pending",
         NotificationEvent::AdapterFailing => "adapter_failing",
+        NotificationEvent::AggressivePrune => "aggressive_prune",
     }
 }
 

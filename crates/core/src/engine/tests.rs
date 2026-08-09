@@ -11,7 +11,7 @@ use disk_saver_platform::FakePlatform;
 
 use crate::{
     Adapter, AdapterError, AdapterStatus, Approvals, Candidate, Class, Config, Ctx, DecisionLog,
-    Engine, Outcome, Pressure, RunOptions, RunReport, Threshold, classify_pressure,
+    Engine, Outcome, Pressure, RunOptions, RunReport, Threshold, Urgency, classify_pressure,
 };
 
 // ── test harness ────────────────────────────────────────────────────────────
@@ -674,6 +674,144 @@ fn scavenge_ran_notification_fires_under_scavenge() {
             .iter()
             .any(|n| n.title.contains("scavenge ran"))
     );
+}
+
+/// A candidate last used `age` ago, for sub-day ages that [`cand`] cannot express.
+fn cand_aged(id: &str, bytes: u64, class: Class, age: Duration) -> Candidate {
+    Candidate::new(id, id, bytes, fake_now() - age, class)
+}
+
+fn prune_alerts(f: &FakePlatform) -> Vec<String> {
+    f.notifications()
+        .iter()
+        .filter(|n| n.title.contains("aggressive prune"))
+        .map(|n| n.body.clone())
+        .collect()
+}
+
+#[test]
+fn aggressive_prune_notification_fires_when_scavenge_deletes_young_items() {
+    let fake = FakePlatform::new().with_free_space(50, 1000); // Scavenge
+    let store = crate::Store::open_in_memory().unwrap();
+    let cfg = Config::defaults(); // aggressive_prune_age 24h
+    let log = new_log();
+    run(
+        &fake,
+        &cfg,
+        &store,
+        vec![
+            Stub::new("a", log)
+                .with_plan(vec![
+                    cand_aged(
+                        "fresh",
+                        4096,
+                        Class::Rebuildable,
+                        Duration::from_secs(90 * 60),
+                    ),
+                    cand("stale", 512, Class::Rebuildable, 40),
+                ])
+                .boxed(),
+        ],
+        &RunOptions::default(),
+    );
+
+    let alerts = prune_alerts(&fake);
+    assert_eq!(alerts.len(), 1, "one alert expected, got {alerts:?}");
+    let body = &alerts[0];
+    // Only the 90-minute item counts as young; the 40-day one is routine.
+    assert!(
+        body.contains("1 item(s)") && body.contains("1h 30m"),
+        "body should name the single young casualty and its age: {body}"
+    );
+    assert!(
+        body.contains("4.1 KB") || body.contains("4.0 KB"),
+        "body should report only the young item's bytes: {body}"
+    );
+    assert_eq!(
+        fake.notifications()
+            .iter()
+            .find(|n| n.title.contains("aggressive prune"))
+            .map(|n| n.urgency),
+        Some(Urgency::Critical),
+        "an expensive, surprising deletion should not be a quiet notification"
+    );
+}
+
+#[test]
+fn aggressive_prune_notification_silent_when_only_stale_items_are_deleted() {
+    let fake = FakePlatform::new().with_free_space(50, 1000);
+    let store = crate::Store::open_in_memory().unwrap();
+    let cfg = Config::defaults();
+    let log = new_log();
+    run(
+        &fake,
+        &cfg,
+        &store,
+        vec![
+            Stub::new("a", log)
+                .with_plan(vec![cand("stale", 4096, Class::Rebuildable, 40)])
+                .boxed(),
+        ],
+        &RunOptions::default(),
+    );
+    assert!(
+        prune_alerts(&fake).is_empty(),
+        "a scavenge that only clears stale artifacts is business as usual"
+    );
+}
+
+#[test]
+fn aggressive_prune_threshold_is_configurable() {
+    // A 90-minute-old deletion is unremarkable if the user set the bar at 1h.
+    let fake = FakePlatform::new().with_free_space(50, 1000);
+    let store = crate::Store::open_in_memory().unwrap();
+    let mut cfg = Config::defaults();
+    cfg.global.aggressive_prune_age = Duration::from_secs(60 * 60);
+    let log = new_log();
+    run(
+        &fake,
+        &cfg,
+        &store,
+        vec![
+            Stub::new("a", log)
+                .with_plan(vec![cand_aged(
+                    "fresh",
+                    4096,
+                    Class::Rebuildable,
+                    Duration::from_secs(90 * 60),
+                )])
+                .boxed(),
+        ],
+        &RunOptions::default(),
+    );
+    assert!(prune_alerts(&fake).is_empty());
+}
+
+#[test]
+fn aggressive_prune_notification_is_absent_in_normal_pressure() {
+    // Normal mode deletes on max_age, so nothing young can be removed and the
+    // tally must stay empty even though the same adapters run.
+    let fake = FakePlatform::new().with_free_space(150, 1000); // Normal, not scavenge
+    let store = crate::Store::open_in_memory().unwrap();
+    let cfg = Config::defaults();
+    let log = new_log();
+    run(
+        &fake,
+        &cfg,
+        &store,
+        vec![
+            Stub::new("a", log)
+                .with_plan(vec![cand_aged(
+                    "fresh",
+                    4096,
+                    Class::Rebuildable,
+                    Duration::from_secs(90 * 60),
+                )])
+                .boxed(),
+        ],
+        &RunOptions::default(),
+    );
+    assert!(prune_alerts(&fake).is_empty());
 }
 
 #[test]

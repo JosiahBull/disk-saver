@@ -17,6 +17,7 @@
 #![forbid(unsafe_code)]
 
 use std::path::Path;
+use std::time::Duration;
 
 use disk_saver_core::{
     Adapter, AdapterError, AdapterFactory, Candidate, Class, CommandSpec, ConfigError, Ctx,
@@ -36,6 +37,9 @@ static GIT_RULE: &[Rule] = &[Rule {
     validate: |_, _| true,
 }];
 
+/// Scavenge floor when the config does not name one — see [`build`].
+const DEFAULT_MIN_AGE: Duration = Duration::from_secs(6 * 60 * 60);
+
 /// `[adapters.git-gc]`: the shared filesystem-scan config plus `aggressive`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -52,7 +56,19 @@ pub fn factory() -> AdapterFactory {
 }
 
 fn build(raw: Option<toml::Value>) -> Result<Box<dyn Adapter>, ConfigError> {
-    let cfg: GcConfig = parse_adapter_config(NAME, raw)?;
+    // `FsConfig` defaults `min_age` to 1h, which suits adapters that delete a
+    // build artifact outright. `git gc` instead *repacks* a live repo: doing
+    // that to something touched an hour ago is work the next commit undoes, and
+    // it competes with the developer for IO. Only override when the user was
+    // silent, so an explicit `min_age = "1h"` still wins.
+    let min_age_unset = raw
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .is_none_or(|t| !t.contains_key("min_age"));
+    let mut cfg: GcConfig = parse_adapter_config(NAME, raw)?;
+    if min_age_unset {
+        cfg.fs.min_age = DEFAULT_MIN_AGE;
+    }
     let policy = RetentionPolicy::new(cfg.fs.max_age, cfg.fs.min_age);
     policy.validate().map_err(|message| ConfigError::Adapter {
         adapter: NAME.to_string(),
@@ -266,6 +282,69 @@ mod tests {
         Some(toml::from_str("roots = [\"~/dev\"]").unwrap())
     }
 
+    /// A repo whose source was last touched `idle` before the fake's `now`.
+    fn repo_idle_for(idle: Duration) -> FakePlatform {
+        let stamp = t(400) - idle;
+        FakePlatform::new()
+            .with_now(t(400))
+            .with_command(
+                "git",
+                &["--version"],
+                CommandOutput::ok("git version 2.44.0"),
+            )
+            .with_command_prefix("git", &["-C"], CommandOutput::ok(COUNT_OBJECTS))
+            .with_file("~/dev/proj/src/main.rs", b"fn main(){}".to_vec(), stamp)
+            .with_file(
+                "~/dev/proj/.git/HEAD",
+                b"ref: refs/heads/main".to_vec(),
+                stamp,
+            )
+            .with_file("~/dev/proj/.git/objects/aa/loose", vec![0u8; 4096], stamp)
+    }
+
+    /// Plan against `fake` under scavenge and report how many repos were proposed.
+    fn scavenge_plan_len(fake: &FakePlatform, cfg: Option<toml::Value>) -> usize {
+        let mut a = (factory().build)(cfg).unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let log = DecisionLog::disabled();
+        let mut ctx = Ctx::new(
+            fake,
+            store.bucket(NAME),
+            Pressure::Scavenge { need: 1 },
+            &log,
+        );
+        a.observe(&mut ctx).unwrap();
+        a.plan(&mut ctx).unwrap().len()
+    }
+
+    #[test]
+    fn default_min_age_is_six_hours_not_the_shared_one_hour() {
+        // git-gc opts out of `FsConfig`'s 1h floor: it repacks a live repo rather
+        // than deleting a rebuildable artifact, so a repo touched two hours ago
+        // is still "in use" for its purposes.
+        assert_eq!(
+            scavenge_plan_len(&repo_idle_for(Duration::from_secs(2 * 60 * 60)), cfg_dev()),
+            0,
+            "2h idle must stay inside the 6h floor"
+        );
+        assert_eq!(
+            scavenge_plan_len(&repo_idle_for(Duration::from_secs(8 * 60 * 60)), cfg_dev()),
+            1,
+            "8h idle is past the 6h floor"
+        );
+    }
+
+    #[test]
+    fn explicit_min_age_beats_the_git_gc_default() {
+        // The override applies only when the user was silent.
+        let cfg = Some(toml::from_str("roots = [\"~/dev\"]\nmin_age = \"1h\"\n").unwrap());
+        assert_eq!(
+            scavenge_plan_len(&repo_idle_for(Duration::from_secs(2 * 60 * 60)), cfg),
+            1,
+            "an explicit 1h floor must not be silently raised to 6h"
+        );
+    }
+
     #[test]
     fn unavailable_when_git_missing() {
         let fake = FakePlatform::new().with_now(t(400));
@@ -315,7 +394,10 @@ mod tests {
 
     #[test]
     fn active_repo_is_not_gced() {
-        // Source touched 2 days ago → not eligible even under scavenge (min_age 7d).
+        // Source touched an hour ago → inside the 6h floor, so not eligible even
+        // under scavenge. Repacking a repo someone is actively committing to is
+        // work the next commit undoes.
+        let recent = t(400) - Duration::from_secs(60 * 60);
         let fake = FakePlatform::new()
             .with_now(t(400))
             .with_command(
@@ -324,11 +406,11 @@ mod tests {
                 CommandOutput::ok("git version 2.44.0"),
             )
             .with_command_prefix("git", &["-C"], CommandOutput::ok(COUNT_OBJECTS))
-            .with_file("~/dev/proj/src/main.rs", b"fn main(){}".to_vec(), t(398))
+            .with_file("~/dev/proj/src/main.rs", b"fn main(){}".to_vec(), recent)
             .with_file(
                 "~/dev/proj/.git/HEAD",
                 b"ref: refs/heads/main".to_vec(),
-                t(398),
+                recent,
             );
         let mut a = (factory().build)(cfg_dev()).unwrap();
         let store = Store::open_in_memory().unwrap();

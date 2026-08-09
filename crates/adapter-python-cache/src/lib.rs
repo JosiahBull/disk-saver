@@ -516,11 +516,13 @@ mod tests {
     #[test]
     fn min_age_floor_under_scavenge() {
         // last_active 5 days old (< min_age 7d): never eligible, even at scavenge.
+        // The floor is pinned here; the shipped default is 1h, which this
+        // fixture would sail past without testing anything.
         let fake = FakePlatform::new()
             .with_file("~/dev/proj/mod.py", "x", t(395))
             .with_sized_dir("~/dev/proj/.pytest_cache", 100, t(395));
 
-        let mut a = adapter("roots = [\"~/dev\"]");
+        let mut a = adapter("roots = [\"~/dev\"]\nmin_age = \"7d\"\n");
         assert!(plan_with(a.as_mut(), &fake, Pressure::Scavenge { need: 1 }).is_empty());
     }
 

@@ -137,6 +137,10 @@ fn effective_config_value(config: &Config) -> toml::Value {
         Value::String(threshold_str(&config.global.scavenge_target)),
     );
     global.insert(
+        "aggressive_prune_age".into(),
+        Value::String(duration_str(&config.global.aggressive_prune_age)),
+    );
+    global.insert(
         "command_timeout".into(),
         Value::String(duration_str(&config.global.command_timeout)),
     );
@@ -208,6 +212,7 @@ fn event_str(e: disk_saver_core::NotificationEvent) -> String {
         E::ScavengeRan => "scavenge_ran",
         E::ApprovalsPending => "approvals_pending",
         E::AdapterFailing => "adapter_failing",
+        E::AggressivePrune => "aggressive_prune",
     }
     .to_string()
 }

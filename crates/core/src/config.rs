@@ -81,6 +81,12 @@ pub struct GlobalConfig {
     pub scavenge_below: Threshold,
     /// Scavenge until this much is free, then stop (default 15%).
     pub scavenge_target: Threshold,
+    /// A scavenge that deletes anything younger than this is "aggressive" and
+    /// raises [`NotificationEvent::AggressivePrune`] (default 24h).
+    ///
+    /// Purely a reporting threshold — it never makes an item eligible or
+    /// ineligible. What may be deleted is each adapter's own `min_age`.
+    pub aggressive_prune_age: Duration,
     /// Default hard timeout for adapter subprocesses (default 60s).
     pub command_timeout: Duration,
     /// Optional override for the sqlite/logs/lock location.
@@ -135,6 +141,10 @@ pub enum NotificationEvent {
     ApprovalsPending,
     /// An adapter failed on several consecutive runs.
     AdapterFailing,
+    /// A scavenge run deleted items younger than
+    /// [`aggressive_prune_age`](GlobalConfig::aggressive_prune_age) — i.e. it
+    /// burned things normal-mode retention would have kept.
+    AggressivePrune,
 }
 
 /// The `[notifications]` section (§15.3).
@@ -322,6 +332,8 @@ struct RawGlobal {
     scavenge_below: Threshold,
     scavenge_target: Threshold,
     #[serde(with = "humantime_serde")]
+    aggressive_prune_age: Duration,
+    #[serde(with = "humantime_serde")]
     command_timeout: Duration,
     state_dir: Option<PathBuf>,
 }
@@ -334,6 +346,7 @@ impl Default for RawGlobal {
             warn_below: Threshold::Percent(12.0),
             scavenge_below: Threshold::Percent(8.0),
             scavenge_target: Threshold::Percent(15.0),
+            aggressive_prune_age: Duration::from_secs(24 * 60 * 60),
             command_timeout: Duration::from_secs(60),
             state_dir: None,
         }
@@ -348,6 +361,7 @@ impl From<RawGlobal> for GlobalConfig {
             warn_below: r.warn_below,
             scavenge_below: r.scavenge_below,
             scavenge_target: r.scavenge_target,
+            aggressive_prune_age: r.aggressive_prune_age,
             command_timeout: r.command_timeout,
             state_dir: r.state_dir,
         }
@@ -404,6 +418,7 @@ impl Default for RawNotifications {
                 NotificationEvent::ScavengeRan,
                 NotificationEvent::ApprovalsPending,
                 NotificationEvent::AdapterFailing,
+                NotificationEvent::AggressivePrune,
             ],
         }
     }
@@ -434,6 +449,10 @@ warn_below           = "12%"   # less free than this -> notify + faster cadence
 scavenge_below       = "8%"    # less free than this -> scavenge mode
 scavenge_target      = "15%"   # scavenge until this much is free, then stop
 
+# A scavenge that deletes anything younger than this notifies you that it ran an
+# aggressive prune. Reporting only — it never changes what is eligible.
+aggressive_prune_age = "24h"
+
 command_timeout = "60s"        # default hard timeout for adapter subprocesses
 # state_dir = "..."            # optional override for sqlite/logs/lock location
 
@@ -445,49 +464,57 @@ pressure_run_every = "1h"      # min interval once free space is below warn_belo
 [notifications]
 enabled = true
 min_gap = "12h"                # don't repeat the same event more often than this
-events  = ["scavenge_warning", "scavenge_ran", "approvals_pending", "adapter_failing"]
+events  = ["scavenge_warning", "scavenge_ran", "approvals_pending", "adapter_failing",
+           "aggressive_prune"]
 
 # Everything below is opaque to the engine except the reserved `enabled` key.
+#
+# Each adapter has two age knobs. `max_age` is the normal-mode threshold: how
+# long an item must sit unused before a routine run deletes it. `min_age` is the
+# scavenge floor: once free space drops below `scavenge_below`, anything older
+# than this may go. The floors are deliberately short — a scavenge is the disk
+# telling you it is nearly full, and a rebuildable artifact is worth less than
+# the space it occupies. Raise them if you would rather keep warm build caches.
 
 [adapters.docker]
 max_age = "7d"
-min_age = "2d"
+min_age = "1d"        # re-pulling an image costs a network round-trip
 protect = ["postgres:*"]
 
 [adapters.node-modules]
 roots   = ["~/dev", "~/work"]
 max_age = "30d"
-min_age = "7d"
+min_age = "1h"
 
 [adapters.rust-target]
 roots   = ["~/dev"]
 max_age = "30d"
-min_age = "7d"
+min_age = "1h"        # note: age comes from source mtimes, not the target dir
 
 [adapters.python-cache]
 roots         = ["~/dev"]
 max_age       = "30d"
-min_age       = "7d"
+min_age       = "1h"
 include_venvs = false
 
 # Global tool caches (regenerable; pruned wholesale when idle). Each takes an
 # optional `paths = [...]` to add non-standard cache locations.
 [adapters.pnpm]
 max_age = "30d"       # pnpm store + metadata cache (store located via `pnpm store path`)
-min_age = "7d"
+min_age = "6h"
 
 [adapters.cargo-registry]
 max_age = "30d"       # ~/.cargo registry/cache, registry/src, git/db, git/checkouts
-min_age = "7d"
+min_age = "6h"
 
 [adapters.pip]
 max_age = "30d"       # pip's download/wheel cache under the platform cache dir
-min_age = "7d"
+min_age = "6h"
 
 [adapters.git-gc]
 roots      = ["~/dev"]  # run `git gc` on idle repos to shrink .git (non-destructive)
 max_age    = "30d"
-min_age    = "7d"
+min_age    = "6h"       # packing a repo mid-session is wasted work, so not 1h
 aggressive = false      # pass --aggressive (slower, sometimes smaller)
 
 [adapters.git-ignored]
@@ -542,6 +569,10 @@ mod tests {
         assert_eq!(c.global.warn_below, Threshold::Percent(12.0));
         assert_eq!(c.global.scavenge_below, Threshold::Percent(8.0));
         assert_eq!(c.global.scavenge_target, Threshold::Percent(15.0));
+        assert_eq!(
+            c.global.aggressive_prune_age,
+            Duration::from_secs(24 * 60 * 60)
+        );
         assert_eq!(c.global.command_timeout, Duration::from_secs(60));
         assert!(c.global.disk.is_none());
         assert_eq!(c.schedule.check_every, Duration::from_secs(3600));
@@ -549,7 +580,13 @@ mod tests {
         assert_eq!(c.schedule.pressure_run_every, Duration::from_secs(3600));
         assert!(c.notifications.enabled);
         assert_eq!(c.notifications.min_gap, Duration::from_secs(12 * 3600));
-        assert_eq!(c.notifications.events.len(), 4);
+        assert_eq!(c.notifications.events.len(), 5);
+        assert!(
+            c.notifications
+                .events
+                .contains(&NotificationEvent::AggressivePrune),
+            "an aggressive prune must be announced unless explicitly opted out of"
+        );
         assert!(c.adapters.is_empty());
     }
 

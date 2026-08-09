@@ -277,7 +277,9 @@ fn scavenge_respects_min_age_floor() {
     .unwrap();
 
     // Under Normal, nothing is old enough (3d < max_age 7d).
-    let mut adapter = adapter_default();
+    // Thresholds pinned so the fixture keeps straddling the floor regardless of
+    // what the shipped defaults are.
+    let mut adapter = adapter_from("max_age = \"7d\"\nmin_age = \"2d\"\n");
     {
         let mut ctx = Ctx::new(&fake, store.bucket("docker"), Pressure::Normal, &log);
         adapter.observe(&mut ctx).unwrap();
@@ -403,6 +405,11 @@ fn build_cache_prune_uses_max_age_normally_and_min_age_under_scavenge() {
         )]
     };
 
+    // Ages are pinned here rather than taken from the shipped defaults: this
+    // test is about which threshold each pressure tier feeds to `--filter`, not
+    // about what those thresholds currently are.
+    const AGES: &str = "max_age = \"7d\"\nmin_age = \"2d\"\n";
+
     // Normal → until=<max_age = 7d = 604800s> (exact seconds, never rounded down).
     {
         let fake = fake_with_version().with_command_prefix(
@@ -412,7 +419,7 @@ fn build_cache_prune_uses_max_age_normally_and_min_age_under_scavenge() {
         );
         let store = Store::open_in_memory().unwrap();
         let log = DecisionLog::disabled();
-        let mut adapter = adapter_default();
+        let mut adapter = adapter_from(AGES);
         let mut ctx = Ctx::new(&fake, store.bucket("docker"), Pressure::Normal, &log);
         let out = adapter.execute(&mut ctx, &batch(42, fake.now())).unwrap();
         assert!(matches!(&out[0], Outcome::Removed { bytes, .. } if *bytes == 42));
@@ -432,7 +439,7 @@ fn build_cache_prune_uses_max_age_normally_and_min_age_under_scavenge() {
         );
         let store = Store::open_in_memory().unwrap();
         let log = DecisionLog::disabled();
-        let mut adapter = adapter_default();
+        let mut adapter = adapter_from(AGES);
         let mut ctx = Ctx::new(
             &fake,
             store.bucket("docker"),

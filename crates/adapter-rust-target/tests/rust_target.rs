@@ -123,7 +123,10 @@ fn normal_requires_max_age() {
 
 #[test]
 fn scavenge_uses_min_age_floor() {
-    let mut adapter = adapter_from(dev_root_toml());
+    // Floor pinned at 7d: this test covers the tier mechanism, and the fixtures
+    // below are expressed in days. The shipped default is 1h — see
+    // `shipped_min_age_floor_is_one_hour`.
+    let mut adapter = adapter_from("roots = [\"~/dev\"]\nmin_age = \"7d\"\n");
 
     // 20 days idle: below max_age but above min_age (7d) → eligible only under
     // scavenge, not under normal.
@@ -139,6 +142,31 @@ fn scavenge_uses_min_age_floor() {
     assert!(
         plan(&fresh, &mut adapter, Pressure::Scavenge { need: 1 }).is_empty(),
         "min_age floor must protect freshly-used projects even under scavenge"
+    );
+}
+
+#[test]
+fn shipped_min_age_floor_is_one_hour() {
+    // Policy, pinned deliberately. This is the sharpest default in the tool:
+    // `last_active` comes from *source* mtimes, so an hour of not typing is
+    // enough to make a project's `target/` collectable under scavenge — and on a
+    // big workspace that is a very long rebuild. Anyone changing this number
+    // should have to change this test too.
+    let mut adapter = adapter_from(dev_root_toml());
+    let scavenge = Pressure::Scavenge { need: 1 };
+    let idle_for = |d: Duration| fake_project(day(400) - d);
+
+    let warm = idle_for(Duration::from_secs(30 * 60));
+    assert!(
+        plan(&warm, &mut adapter, scavenge).is_empty(),
+        "30 minutes idle is inside the 1h floor"
+    );
+
+    let cold = idle_for(Duration::from_secs(2 * 60 * 60));
+    assert_eq!(
+        plan(&cold, &mut adapter, scavenge).len(),
+        1,
+        "2 hours idle is past the 1h floor"
     );
 }
 

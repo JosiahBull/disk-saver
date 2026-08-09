@@ -362,7 +362,12 @@ pub struct FsConfig {
     #[serde(with = "humantime_serde")]
     pub max_age: Duration,
     /// Scavenge floor: items younger than this are never deleted, whatever the
-    /// disk pressure. Defaults to 7 days.
+    /// disk pressure. Defaults to 1 hour.
+    ///
+    /// Short on purpose. Everything these adapters delete is a build artifact
+    /// that regenerates from sources already on disk, so under real pressure the
+    /// only cost of being wrong is a rebuild. `git-gc` overrides this upward —
+    /// see its own default.
     #[serde(with = "humantime_serde")]
     pub min_age: Duration,
     /// Whether deletions should be routed to the approvals queue for
@@ -377,7 +382,7 @@ impl Default for FsConfig {
             exclude: Vec::new(),
             max_depth: 8,
             max_age: Duration::from_secs(30 * 24 * 60 * 60),
-            min_age: Duration::from_secs(7 * 24 * 60 * 60),
+            min_age: Duration::from_secs(60 * 60),
             confirm: false,
         }
     }
@@ -960,7 +965,8 @@ mod tests {
         assert!(c.exclude.is_empty());
         assert_eq!(c.max_depth, 8);
         assert_eq!(c.max_age, Duration::from_secs(30 * 24 * 60 * 60));
-        assert_eq!(c.min_age, Duration::from_secs(7 * 24 * 60 * 60));
+        // Deliberately short — build artifacts regenerate from sources on disk.
+        assert_eq!(c.min_age, Duration::from_secs(60 * 60));
         assert!(!c.confirm);
     }
 
@@ -983,8 +989,8 @@ mod tests {
         assert_eq!(cfg.exclude, vec!["**/vendor/**".to_string()]);
         assert_eq!(cfg.max_depth, 4);
         assert_eq!(cfg.max_age, Duration::from_secs(45 * 24 * 60 * 60));
-        // min_age omitted → default 7d.
-        assert_eq!(cfg.min_age, Duration::from_secs(7 * 24 * 60 * 60));
+        // min_age omitted → default 1h.
+        assert_eq!(cfg.min_age, Duration::from_secs(60 * 60));
         assert!(cfg.confirm);
     }
 

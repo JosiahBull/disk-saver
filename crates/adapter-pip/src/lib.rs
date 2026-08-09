@@ -81,7 +81,10 @@ mod tests {
             vec![0u8; 16384],
             t(398),
         ); // 2d < 7d
-        let mut a = (factory().build)(None).unwrap();
+        // Floor pinned: this test is about the floor being honoured at all, not
+        // about where the shipped default happens to sit (6h).
+        let cfg = toml::from_str("min_age = \"7d\"\n").unwrap();
+        let mut a = (factory().build)(Some(cfg)).unwrap();
         let store = Store::open_in_memory().unwrap();
         let log = DecisionLog::disabled();
         let mut ctx = Ctx::new(
