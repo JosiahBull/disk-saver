@@ -67,7 +67,7 @@ fn build(raw: Option<toml::Value>) -> Result<Box<dyn Adapter>, ConfigError> {
         .is_none_or(|t| !t.contains_key("min_age"));
     let mut cfg: GcConfig = parse_adapter_config(NAME, raw)?;
     if min_age_unset {
-        cfg.fs.min_age = DEFAULT_MIN_AGE;
+        cfg.fs.min_age = DEFAULT_MIN_AGE.min(cfg.fs.max_age);
     }
     let policy = RetentionPolicy::new(cfg.fs.max_age, cfg.fs.min_age);
     policy.validate().map_err(|message| ConfigError::Adapter {
@@ -343,6 +343,43 @@ mod tests {
             1,
             "an explicit 1h floor must not be silently raised to 6h"
         );
+    }
+
+    #[test]
+    fn short_max_age_does_not_trip_the_default_floor() {
+        // A 30m `max_age` is shorter than our 6h default floor. Since the floor
+        // is our opinion and not the user's, it gives way rather than making the
+        // whole config unloadable.
+        let cfg = Some(toml::from_str("roots = [\"~/dev\"]\nmax_age = \"30m\"\n").unwrap());
+        assert!(
+            (factory().build)(cfg).is_ok(),
+            "our own default floor must not reject the user's shorter max_age"
+        );
+    }
+
+    #[test]
+    fn clamped_floor_still_gates_on_the_users_max_age() {
+        // Not merely loadable: the clamp lands on 30m, so that is the scavenge
+        // floor — 10m idle is protected, 45m idle is collectable.
+        let cfg = || Some(toml::from_str("roots = [\"~/dev\"]\nmax_age = \"30m\"\n").unwrap());
+        assert_eq!(
+            scavenge_plan_len(&repo_idle_for(Duration::from_secs(10 * 60)), cfg()),
+            0,
+            "10m idle is inside the clamped 30m floor"
+        );
+        assert_eq!(
+            scavenge_plan_len(&repo_idle_for(Duration::from_secs(45 * 60)), cfg()),
+            1,
+            "45m idle is past the clamped 30m floor"
+        );
+    }
+
+    #[test]
+    fn contradictory_explicit_pair_is_still_rejected() {
+        // The clamp applies only to *our* default. When the user writes both
+        // numbers and they contradict, that is a mistake worth reporting.
+        let cfg = Some(toml::from_str("min_age = \"12h\"\nmax_age = \"30m\"\n").unwrap());
+        assert!((factory().build)(cfg).is_err());
     }
 
     #[test]
