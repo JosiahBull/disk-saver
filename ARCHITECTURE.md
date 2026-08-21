@@ -567,6 +567,7 @@ min_age = "7d"
 roots = ["~/dev"]
 max_age = "30d"
 min_age = "7d"
+incremental_min_age = "15m"    # scavenge-only: target/*/incremental has its own, shorter floor
 
 [adapters.python-cache]
 roots = ["~/dev"]
@@ -829,7 +830,7 @@ don't want `disk-saver`'s own scanning to matter either — it never writes into
 | Adapter | Deletes | Class | Marker + validation | Notes |
 |---|---|---|---|---|
 | `node-modules` | `node_modules/` | Cache | sibling `package.json` | doesn't descend into nested node_modules; pnpm symlink layouts safe (no-follow) |
-| `rust-target` | `target/` | Rebuildable | sibling `Cargo.toml` **and** `CACHEDIR.TAG` inside | prior art: cargo-sweep (per-file granularity is a possible future refinement) |
+| `rust-target` | `target/`; under scavenge also `target/**/incremental` inside a `target/` too young to delete | Rebuildable | sibling `Cargo.toml` **and** `CACHEDIR.TAG` inside; an incremental cache is validated through the `target/` enclosing it | prior art: cargo-sweep (per-file granularity is a possible future refinement) |
 | `python-cache` | `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.tox/`; `.venv/` only if `include_venvs = true` | Rebuildable | dir-specific (e.g. `__pycache__` must contain only `*.pyc*`) | global pip/uv caches: future |
 | shared config | `roots` (required-ish; default `["~"]` with a built-in denylist: `~/Library`, `~/.Trash`, cache dirs), `exclude` globs, `RetentionPolicy`, `max_depth = 8`, `confirm = false` | | | |
 
@@ -838,6 +839,27 @@ anyway — future use: caching walk results, remembering "size at last sighting"
 better reporting.
 
 Defaults: `max_age = "30d"`, `min_age = "7d"`.
+
+**The `rust-target` incremental sweep.** The whole-`target/` rule only ever fires on a
+project nobody has touched lately, which is the wrong shape for the directories that
+actually get large: an *active* cargo workspace rebuilds hourly, so its `last_active`
+never ages past any floor worth having, and it grows the whole time. Cargo never reclaims
+anything — every distinct build configuration (a different feature union from `-p one-crate`
+versus `--workspace --all-features`, clippy's rustc wrapper versus cargo's) gets its own
+`-C metadata` and its own artifacts, and the previous set stays forever. `incremental` is
+the worst of it, because rustc garbage-collects sessions *within* one keyed directory but
+never removes a directory whose key changed. Measured on one 14-crate workspace after eight
+days of ordinary work: `target/` at 142 GB, 60 GB of it `debug/incremental` across 1,691
+session directories.
+
+So under `Pressure::Scavenge` only, the adapter also proposes the `incremental` directories
+inside a `target/` it may not delete outright. That is strictly less loss than the parent —
+every compiled rlib stays, so nothing has to be *re*built; the next edit to a crate just
+recompiles it in full rather than by codegen unit. Being cheap, it gets its own much shorter
+floor (`incremental_min_age`, 15m) instead of the `min_age` guarding the whole directory;
+the default lowers itself to `max_age` rather than erroring when a config sets a shorter one.
+The two never overlap — a `target/` that is itself eligible is not also swept, so the same
+bytes are never proposed twice.
 
 ### 12.5 `trash` — the OS recycle bin
 

@@ -106,6 +106,11 @@ protect = ["postgres:*"]       # globs to never remove
 roots   = ["~/dev", "~/work"]
 max_age = "30d"
 
+[adapters.rust-target]
+roots               = ["~/dev"]
+max_age             = "30d"
+incremental_min_age = "15m"    # scavenge-only sweep of target/**/incremental (see below)
+
 [adapters.trash]
 confirm = true                 # queue for `disk-saver review` instead of auto-deleting
 ```
@@ -131,6 +136,17 @@ accept absolute sizes (`"40GB"`) or percentages (`"10%"`); durations use `"7d"`/
 The three global-cache adapters (`pnpm`, `cargo-registry`, `pip`) prune a whole cache directory
 when it has been idle past the policy; add `paths = ["…"]` to any of them to cover a non-standard
 cache location.
+
+`rust-target` has one extra trick, because the cargo `target/` directories that grow the most are
+the ones it can never collect: an *active* workspace is rebuilt hourly, so it never ages past any
+floor worth having, while cargo keeps every artifact it has ever built for every feature union,
+profile and rustc wrapper. In **scavenge mode only**, the adapter therefore also proposes the
+`target/**/incremental` caches inside a `target/` that is too young to delete outright. That is a
+much smaller loss than the parent — every compiled rlib stays, so nothing has to be rebuilt; the
+next edit just recompiles that crate in full rather than by codegen unit — so it gets its own,
+shorter `incremental_min_age` floor (15m) rather than the `min_age` that guards the whole
+directory. A `target/` that *is* eligible is deleted whole and not also swept, so the same bytes
+are never counted twice. On one 14-crate Rust workspace this was 60 GB of a 142 GB `target/`.
 
 Each adapter is its own crate behind a cargo feature (all on by default), plus a `decision-log`
 feature (default on) for the `why`-command audit trail. Trim any of them for a leaner build.
