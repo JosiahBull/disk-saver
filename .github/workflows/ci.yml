@@ -1,71 +1,391 @@
 name: CI
 
 on:
+  # Reusable: release.yml calls this workflow on a tag, so a release runs the same gates a pull
+  # request does, from the same file. The edge points this way deliberately — a shim ci.yml
+  # calling a separate checks.yml would report every job as `checks / <name>`, renaming all of
+  # them at once and breaking branch protection.
+  workflow_call:
+  # Only main, so a branch with an open PR runs CI once rather than twice. Two runs of the same
+  # job on the same commit race for the shared Rust cache, and the loser rebuilds from scratch.
   push:
     branches: [main]
+  # No paths filter, deliberately: Gate is the only required check, so it has to report on every
+  # pull request or a docs-only change can never merge.
   pull_request:
+    branches: [main]
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
+# see https://matklad.github.io/2021/09/04/fast-rust-builds.html
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  CI: 1
+  RUST_BACKTRACE: short
+  RUSTUP_MAX_RETRIES: 10
+  RUSTFLAGS: "-D warnings"
+  RUSTDOCFLAGS: "-D warnings"
+
+# Default-deny. No job here needs more; release.yml escalates only in the job that publishes.
+permissions:
+  contents: read
 
 jobs:
-  fmt:
-    name: rustfmt
+  check:
+    name: Check
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: ci-check-${{ github.repository }}-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run cargo check
+        run: cargo check --workspace --all-targets --all-features --locked
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: ci-fmt-${{ github.repository }}-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
           components: rustfmt
-      - run: cargo fmt --all --check
+
+      - name: Check formatting
+        run: bash scripts/check-fmt.sh
 
   clippy:
-    name: clippy (${{ matrix.os }})
+    name: Clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    concurrency:
+      group: ci-clippy-${{ github.repository }}-${{ github.event_name }}-${{ github.ref }}-${{ matrix.os }}
+      cancel-in-progress: true
     strategy:
       fail-fast: false
+      # Both, because roughly every adapter has a `#[cfg(target_os = ...)]` branch — the
+      # macOS trash directory, the launchd unit, the `codesign` probing in `doctor` — and a
+      # single-OS lint run compiles exactly one side of each.
       matrix:
         os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: stable
           components: clippy
+
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run clippy
+        run: bash scripts/check-clippy.sh
 
   test:
-    name: test (${{ matrix.os }})
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    concurrency:
+      group: ci-test-${{ github.repository }}-${{ github.event_name }}-${{ github.ref }}-${{ matrix.os }}
+      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --all-features
 
-  # Guards the compiled-out paths (cargo features) so they cannot rot: the
-  # `decision-log`-off ZST path in core, and the CLI with adapters trimmed.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: bash scripts/test.sh
+
   features:
-    name: feature matrix
+    name: Features
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: ci-features-${{ github.repository }}-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: stable
           components: clippy
+
       - uses: Swatinem/rust-cache@v2
-      # Leanest possible build: no adapters, no decision-log.
-      - run: cargo build --workspace --no-default-features
-      - run: cargo clippy -p disk-saver --no-default-features --all-targets -- -D warnings
-      # decision-log compiled OUT of core.
-      - run: cargo test -p disk-saver-core --no-default-features
-      # All adapters, decision-log OFF (exercises the compiled-out `why` path).
-      - run: cargo test -p disk-saver --no-default-features --features docker,node-modules,rust-target,python-cache,pnpm,cargo-registry,pip,git-gc,git-ignored,trash
+
+      # Guards the compiled-out paths that --all-features can never reach: the
+      # `decision-log`-off ZST in core, and the CLI with adapters trimmed.
+      - name: Check the feature matrix
+        run: bash scripts/check-features.sh
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: ci-doc-${{ github.repository }}-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rust-docs
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build documentation
+        run: bash scripts/check-docs.sh
+
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: ci-msrv-${{ github.repository }}-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      # The toolchain is read out of Cargo.toml rather than written twice: `rust-version` is the
+      # claim, and installing something else here would test a number nobody published.
+      - name: Read the declared MSRV
+        id: msrv
+        run: echo "version=$(bash scripts/check-msrv.sh --print)" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-${{ steps.msrv.outputs.version }}
+
+      - name: Compile on the declared MSRV
+        run: bash scripts/check-msrv.sh
+
+  versions:
+    name: Versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: ci-versions-${{ github.repository }}-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pure text parsing, so no toolchain and no cache. On a tag — release.yml calls this
+      # workflow, so GITHUB_REF_TYPE is `tag` here — it additionally asserts the tag matches
+      # [workspace.package] version, which is what makes it impossible to publish a signed vX
+      # from a tree that says vY.
+      - name: Check versions
+        run: bash scripts/check-versions.sh
+
+  workspace-deps:
+    name: Workspace dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: ci-workspace-deps-${{ github.repository }}-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      # A published binary rather than `cargo install`, which would rebuild it from source on
+      # every run.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-autoinherit@0.1.6
+
+      # The tool is the check and the fix in one, so a diff in this job's log is the patch to
+      # apply: every requirement belongs in the root [workspace.dependencies], and a member
+      # manifest says only `foo.workspace = true`.
+      - name: Check every dependency is declared once
+        run: bash scripts/check-workspace-deps.sh
+
+  deps:
+    name: Dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: ci-deps-${{ github.repository }}-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      # cargo-udeps reads unstable compiler output, so nightly — the only job here that needs it.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+          cache-bin: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-udeps
+
+      - name: Check 0.x dependencies are held back from minor bumps
+        run: bash scripts/check-dependabot.sh
+
+      - name: Check for unused dependencies
+        run: bash scripts/check-unused-deps.sh
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: ci-package-${{ github.repository }}-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Every crate has to be packageable before the first `cargo publish`, not after the tag
+      # is cut: a path dependency with no version, a missing description, or a README symlink
+      # that did not survive into the tarball are all invisible until then.
+      - name: Check every crate can be packaged
+        run: bash scripts/check-publish.sh
+
+  workflows:
+    name: Workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: ci-workflows-${{ github.repository }}-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      # A pinned release tarball rather than piping an unpinned script from a moving branch
+      # into bash, and rather than taiki-e/install-action, which does not carry actionlint — it
+      # would fall back to cargo-binstall, and actionlint is a Go program, not a crate. Bump
+      # ACTIONLINT_VERSION by hand; Dependabot does not track it either.
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          curl -fsSL \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz actionlint
+          sudo install -m 0755 actionlint /usr/local/bin/actionlint
+          rm actionlint
+          actionlint --version
+
+      - name: Lint workflows and scripts
+        run: bash scripts/check-workflows.sh
+
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    concurrency:
+      group: ci-build-${{ github.repository }}-${{ github.event_name }}-${{ github.ref }}-${{ matrix.os }}
+      cancel-in-progress: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # This job exists to prove the shipped binary links under the release profile — fat LTO
+      # and codegen-units=1 are the settings a debug build never exercises. `--workspace` so the
+      # TUI installer is covered too; it is the one member a plain `cargo build` skips
+      # (default-members is crates/cli).
+      - name: Build release
+        run: cargo build --workspace --release --locked
+
+      - name: Smoke-test the binary
+        run: |
+          ./target/release/disk-saver --version
+          ./target/release/disk-saver --help >/dev/null
+
+  # The single required status check on main.
+  #
+  # Branch protection matches required checks by exact job display name, so with one context per
+  # job the list drifts silently: add a job, or a leg to a matrix, and it is not required until
+  # someone remembers to add it by hand — a new gate that cannot fail a PR looks identical to one
+  # that can. Every job above is a `needs:` here instead, so the gate set is whatever this
+  # workflow runs, and restructuring below never touches branch protection again.
+  # scripts/check-workflows.sh fails if a job is missing from this list.
+  gate:
+    name: Gate
+    needs:
+      - check
+      - fmt
+      - clippy
+      - test
+      - features
+      - doc
+      - msrv
+      - versions
+      - workspace-deps
+      - deps
+      - package
+      - workflows
+      - build
+    # `always()`, so a job that fails still produces a Gate result rather than leaving the one
+    # required check permanently pending.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: ci-gate-${{ github.repository }}-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Require every job to have succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          # `skipped` has to fail too. A job dropped by a stray `if:` or an unmet `needs:` would
+          # otherwise satisfy the only required check.
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "::error::a required job reported '$result'"
+              exit 1
+            fi
+          done
+          echo "✓ every required job succeeded"

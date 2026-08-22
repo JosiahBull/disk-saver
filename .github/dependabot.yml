@@ -1,0 +1,89 @@
+# Dependency-update PRs. Each one is a normal pull request against main, so it faces the same
+# required check as any other (Gate), and dependabot-auto-merge.yml turns on GitHub auto-merge
+# so a green minor or patch bump lands without ceremony. Everything below bounds how much lands
+# unattended, and how often.
+#
+# Filename: GitHub only reads `.github/dependabot.yml` — never `.yaml`.
+version: 2
+updates:
+  # The whole Cargo workspace: root Cargo.toml plus Cargo.lock. Every member inherits its
+  # version from [workspace.package] and every requirement lives in the root
+  # [workspace.dependencies] (scripts/check-workspace-deps.sh enforces that), so "/" is the
+  # only directory there is to scan.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      # Saturday: a cargo bump changes Cargo.lock, which misses the Rust cache and builds cold
+      # on both OSes. Keep that burst away from working hours.
+      day: saturday
+    # Grouping usually makes this moot; it caps the worst-case burst.
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # One PR for all the low-risk bumps rather than one per crate: the cost of a single CI
+      # run instead of N of them.
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Majors are a human decision, taken with the migration attached.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      # Every 0.x direct dependency, ignored for minor bumps.
+      #
+      # Dependabot classifies 0.10 -> 0.11 as *minor* because the major field is still 0. Under
+      # Cargo's semver that is a breaking change — for a 0.x crate the minor field is the
+      # compatibility boundary. Dependabot has no setting for this, so the rule is enforced by
+      # listing the crates it applies to.
+      #
+      # This costs very little: a 0.x crate ships patches most of the time, and those are still
+      # picked up. It is the minor bumps, the breaking ones, that now wait for a human.
+      #
+      # scripts/check-dependabot.sh fails the build if a 0.x dependency is added to the
+      # workspace without being listed here. This repository's own `disk-saver-*` crates are
+      # skipped by that script: they carry a version beside their path so the workspace can be
+      # published, but Dependabot never bumps them.
+      - dependency-name: "globset"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "ratatui"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "rusqlite"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "rustix"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "toml"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "tracing"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "tracing-appender"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "tracing-subscriber"
+        update-types: ["version-update:semver-minor"]
+
+  # The actions used by ci.yml, release.yml and dependabot-auto-merge.yml.
+  #
+  # Note dtolnay/rust-toolchain@master is a branch ref, not a version, so Dependabot cannot and
+  # will not update it. Neither will it track the pinned `actionlint` release in ci.yml's
+  # Workflows job, which is a tarball URL — bump that by hand.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: saturday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    ignore:
+      # An action major can pass every check and still change artifact layout or output names,
+      # which surfaces only at release time.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

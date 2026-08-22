@@ -1,0 +1,262 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: "Release type"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - release
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUST_BACKTRACE: short
+  RUSTUP_MAX_RETRIES: 10
+
+# Default-deny; the publishing job escalates to what it actually needs.
+permissions:
+  contents: read
+
+# Never cancel in progress: a superseded run may already have signed and published some assets,
+# and killing it midway leaves a half-published release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The full pull-request gate suite, run against the tag. The same file CI runs, so there is no
+  # release-only copy of any check and nothing can be published that a pull request would have
+  # rejected. On a tag the Versions gate additionally asserts the tag matches the declared
+  # version — which is what makes it impossible to ship a v0.2.0 built from a tree whose
+  # Cargo.toml still says 0.1.0.
+  gates:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    # A release tag always builds cold, and the release profile is fat LTO with
+    # codegen-units = 1.
+    timeout-minutes: 60
+    needs: [gates]
+    strategy:
+      fail-fast: false
+      # macOS and Linux only — that is what the program supports, and `crates/platform` has no
+      # Windows implementation. The musl legs matter more than usual here: a static binary is
+      # what lets one download work on a distro whose glibc is older than the runner's.
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            asset_name: disk-saver-linux-x86_64
+            command: cargo
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            asset_name: disk-saver-linux-x86_64-musl
+            command: cross
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            asset_name: disk-saver-linux-aarch64
+            command: cross
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            asset_name: disk-saver-linux-aarch64-musl
+            command: cross
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            asset_name: disk-saver-macos-x86_64
+            command: cargo
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            asset_name: disk-saver-macos-aarch64
+            command: cargo
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # `cross` runs the build in a container that carries the cross C toolchain. That is not
+      # optional here: `rusqlite` is built with its `bundled` feature, so every target compiles
+      # SQLite from C source.
+      - name: Install cross
+        if: matrix.command == 'cross'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      # `-p disk-saver`, not `--workspace`: the archive ships one binary, and an unscoped build
+      # would additionally fat-LTO-link the TUI installer and discard it.
+      - name: Build release binary
+        run: ${{ matrix.command }} build -p disk-saver --release --locked --target ${{ matrix.target }}
+
+      # The license and the README travel with the binary: a tarball someone downloads in two
+      # years should say what it is and under what terms.
+      - name: Create release archive
+        run: |
+          staging="${{ matrix.asset_name }}"
+          mkdir -p "$staging"
+          cp "target/${{ matrix.target }}/release/disk-saver" "$staging/"
+          cp README.md LICENSE "$staging/"
+          tar -czvf "${{ matrix.asset_name }}.tar.gz" "$staging"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write # Required for cosign keyless signing
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: disk-saver-*
+          path: artifacts
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            # Tag push — the tag is the name, and the Versions gate has already asserted it
+            # matches Cargo.toml.
+            VERSION="${{ github.ref_name }}"
+            PRERELEASE=false
+          elif [[ "${{ github.event.inputs.release_type }}" == "dev" ]]; then
+            VERSION="dev-$(date +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}"
+            PRERELEASE=true
+          else
+            VERSION="v$(bash scripts/check-versions.sh --print)"
+            PRERELEASE=false
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          # `find` rather than a glob loop: an unmatched glob stays literal under `bash -e`, so a
+          # directory holding no tarball would kill the whole step.
+          find artifacts -type f -name '*.tar.gz' -exec cp {} release/ \;
+          ls -la release/
+          # Every target must have produced a tarball. Publishing a partial set is worse than
+          # failing: the release looks complete and silently is not.
+          count=$(find release -type f -name '*.tar.gz' | wc -l | tr -d ' ')
+          if [ "$count" -ne 6 ]; then
+            echo "::error::expected 6 release tarballs, found $count"
+            exit 1
+          fi
+
+      - name: Generate checksums
+        run: |
+          cd release
+          sha256sum ./*.tar.gz > checksums-sha256.txt
+          cat checksums-sha256.txt
+
+      - name: Sign artifacts with cosign
+        run: |
+          cd release
+          for file in *.tar.gz; do
+            cosign sign-blob --yes --output-signature "${file}.sig" --output-certificate "${file}.pem" "$file"
+          done
+          cosign sign-blob --yes --output-signature "checksums-sha256.txt.sig" --output-certificate "checksums-sha256.txt.pem" "checksums-sha256.txt"
+          ls -la
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          prerelease: ${{ steps.version.outputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            release/*.tar.gz
+            release/*.sig
+            release/*.pem
+            release/checksums-sha256.txt
+          body: |
+            ## Install
+
+            Download the archive for your platform, then move the binary onto your `PATH`:
+
+            | Platform | Architecture | File |
+            |----------|--------------|------|
+            | Linux | x86_64 | `disk-saver-linux-x86_64.tar.gz` |
+            | Linux | x86_64 (musl, static) | `disk-saver-linux-x86_64-musl.tar.gz` |
+            | Linux | aarch64 | `disk-saver-linux-aarch64.tar.gz` |
+            | Linux | aarch64 (musl, static) | `disk-saver-linux-aarch64-musl.tar.gz` |
+            | macOS | x86_64 (Intel) | `disk-saver-macos-x86_64.tar.gz` |
+            | macOS | aarch64 (Apple Silicon) | `disk-saver-macos-aarch64.tar.gz` |
+
+            ```bash
+            # macOS (Apple Silicon)
+            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/disk-saver-macos-aarch64.tar.gz
+            tar -xzf disk-saver-macos-aarch64.tar.gz
+            sudo install -m 0755 disk-saver-macos-aarch64/disk-saver /usr/local/bin/disk-saver
+
+            # Linux x86_64 (static)
+            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/disk-saver-linux-x86_64-musl.tar.gz
+            tar -xzf disk-saver-linux-x86_64-musl.tar.gz
+            sudo install -m 0755 disk-saver-linux-x86_64-musl/disk-saver /usr/local/bin/disk-saver
+            ```
+
+            Then set it up: `disk-saver config init && disk-saver plan`. On macOS,
+            `disk-saver doctor` will tell you whether it needs Full Disk Access.
+
+            Or build from source:
+
+            ```bash
+            cargo install --locked --git https://github.com/${{ github.repository }} disk-saver
+            ```
+
+            ### Verify checksums
+
+            ```bash
+            sha256sum -c checksums-sha256.txt
+            ```
+
+            ### Verify signatures
+
+            Every artifact is signed with [cosign](https://github.com/sigstore/cosign) keyless
+            signing, so the certificate identity below proves the file came out of this
+            repository's release workflow.
+
+            ```bash
+            cosign verify-blob \
+              --signature disk-saver-macos-aarch64.tar.gz.sig \
+              --certificate disk-saver-macos-aarch64.tar.gz.pem \
+              --certificate-identity-regexp "https://github.com/${{ github.repository }}/" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              disk-saver-macos-aarch64.tar.gz
+            ```
