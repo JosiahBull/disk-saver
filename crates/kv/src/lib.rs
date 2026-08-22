@@ -41,9 +41,6 @@ pub struct Store {
 
 impl Store {
     /// Open (creating if absent) a file-backed store at `path`.
-    ///
-    /// Applies the schema and pragmas from `ARCHITECTURE.md` §6 (WAL journal mode,
-    /// `synchronous = NORMAL`, `busy_timeout = 5000`, `user_version = 1`).
     pub fn open(path: &std::path::Path) -> Result<Store> {
         let conn = Connection::open(path)?;
         Self::init(&conn)?;
@@ -51,8 +48,6 @@ impl Store {
     }
 
     /// Open an ephemeral in-memory store (primarily for tests).
-    ///
-    /// WAL mode is effectively a no-op for `:memory:` databases; that is fine.
     pub fn open_in_memory() -> Result<Store> {
         let conn = Connection::open_in_memory()?;
         Self::init(&conn)?;
@@ -82,9 +77,6 @@ impl Store {
     }
 
     /// Get a handle scoped to the namespace `name`.
-    ///
-    /// Buckets are created lazily — a bucket "exists" precisely as long as it holds
-    /// at least one key. Two buckets with different names never share keys.
     pub fn bucket(&self, name: &str) -> Bucket<'_> {
         Bucket {
             store: self,
