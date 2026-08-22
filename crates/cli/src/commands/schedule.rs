@@ -259,10 +259,10 @@ fn activate_hint() -> String {
 /// Extract the fire interval (seconds) from an installed unit's contents.
 #[cfg(target_os = "macos")]
 fn parse_interval(text: &str) -> Option<u64> {
-    let after_key = &text[text.find("<key>StartInterval</key>")?..];
-    let open = after_key.find("<integer>")? + "<integer>".len();
-    let close = after_key[open..].find("</integer>")?;
-    after_key[open..open + close].trim().parse().ok()
+    let (_, after_key) = text.split_once("<key>StartInterval</key>")?;
+    let (_, after_open) = after_key.split_once("<integer>")?;
+    let (value, _) = after_open.split_once("</integer>")?;
+    value.trim().parse().ok()
 }
 
 /// Extract the fire interval (seconds) from an installed unit's contents.

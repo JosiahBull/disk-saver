@@ -713,7 +713,8 @@ fn image_label(img: &ObservedImage) -> String {
 /// Short 12-char form of an image id (with any `sha256:` prefix stripped).
 fn short_id(id: &str) -> &str {
     let s = id.strip_prefix("sha256:").unwrap_or(id);
-    &s[..s.len().min(12)]
+
+    s.get(..12).unwrap_or(s)
 }
 
 /// Parse a docker human size string (`"4.2GB"`, `"927.7kB"`, `"0B"`) to bytes.
@@ -793,7 +794,9 @@ fn gc_bucket(ctx: &Ctx, prefix: &str, present: &[String]) {
         return;
     };
     for key in keys {
-        let id = &key[prefix.len()..];
+        let Some(id) = key.strip_prefix(prefix) else {
+            continue;
+        };
         if !present.iter().any(|p| p == id) {
             let _ = ctx.kv.delete(&key);
         }

@@ -164,7 +164,8 @@ fn adhoc_cdhash(app: &App, exe: &std::path::Path) -> Option<String> {
     let text = format!("{}{}", out.stdout_string(), out.stderr_string());
     let line = text.lines().find(|l| l.contains("designated =>"))?;
     let hash = line.split("cdhash H\"").nth(1)?.split('"').next()?;
-    Some(format!("{}…", &hash[..hash.len().min(8)]))
+
+    Some(format!("{}…", hash.get(..8).unwrap_or(hash)))
 }
 
 /// Open the Full Disk Access pane.
