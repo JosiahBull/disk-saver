@@ -131,6 +131,36 @@ build the six target archives, sign every one with keyless cosign, and create th
 `workflow_dispatch` with `release_type: dev` produces a timestamped prerelease from whatever is
 on the branch — useful for handing someone a build without spending a version number.
 
+### Prebuilt binaries and `cargo binstall`
+
+`crates/cli/Cargo.toml` carries a `[package.metadata.binstall]` table so
+[cargo-binstall](https://github.com/cargo-bins/cargo-binstall) can fetch a release archive
+instead of compiling. It exists because binstall's default guess is
+`{ name }-{ target }{ archive-suffix }` — the full Rust target triple — while `release.yml`
+publishes shorter names (`disk-saver-linux-x86_64-musl.tar.gz`). Left to guess, binstall would
+404 on every asset and quietly fall back to a from-source build, which is the failure mode this
+table prevents. Four of the six assets fall out of `{ os-name }`/`{ target-arch }`; the two musl
+legs get an override each.
+
+**If you rename a release asset, or change the directory inside the tarball, update that table
+in the same commit.** Nothing in CI catches a mismatch: the URLs only resolve against a
+published release, so a break shows up as a user's `cargo binstall` silently compiling.
+
+Two limits worth knowing:
+
+* **Resolution goes through crates.io.** binstall looks a crate up in the registry to find its
+  manifest, so `cargo binstall disk-saver` cannot work until the crate is published (below).
+  Until then the equivalent is
+  `cargo binstall --git https://github.com/JosiahBull/disk-saver disk-saver`, which clones and
+  reads the manifest directly.
+* **binstall cannot verify our signatures.** Its `[package.metadata.binstall.signing]` support
+  is minisign-only; the release is signed with keyless cosign/sigstore, which binstall does not
+  yet understand. So a binstall install is checksum-free and signature-free — it trusts the
+  GitHub release. Verifying the cosign certificate is a deliberate manual step
+  (`cosign verify-blob`, as printed in the release body). Adding minisign alongside cosign
+  would make binstall verify, at the cost of a long-lived private key in CI secrets — which is
+  exactly what keyless signing was chosen to avoid, so it has not been done.
+
 ### Publishing to crates.io
 
 Not wired up, deliberately: `release.yml` publishes GitHub releases only, and nothing in this

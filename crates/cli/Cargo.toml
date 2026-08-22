@@ -10,6 +10,39 @@ readme = "README.md"
 keywords = ["disk", "cleanup", "cache", "docker", "housekeeping"]
 categories = ["command-line-utilities", "filesystem"]
 
+# ── cargo-binstall ───────────────────────────────────────────────────────────
+# Lets `cargo binstall disk-saver` fetch a prebuilt archive from the GitHub
+# release instead of compiling the tree. Without this, binstall guesses
+# `{ name }-{ target }{ archive-suffix }` — the full Rust target triple — and
+# the release workflow publishes shorter, human-readable names, so every guess
+# would 404 and binstall would silently fall back to a from-source build.
+#
+# `{ os-name }` is rustc's OS name (`linux`/`macos`) and `{ target-arch }` is the
+# CPU (`x86_64`/`aarch64`), which together reproduce four of the six asset names
+# exactly. Only the two musl legs carry an extra suffix, so they get one override
+# each, keyed by the exact triple.
+#
+# `bin-dir` is the path *inside* the archive: release.yml tars a staging
+# directory named after the asset, so the binary sits one level down.
+#
+# Note binstall resolves a crate through crates.io by default, so until
+# `disk-saver` is published there this works via
+# `cargo binstall --git https://github.com/JosiahBull/disk-saver disk-saver`.
+# The signatures in the release are cosign/sigstore, which binstall cannot yet
+# verify (it supports minisign only) — see CONTRIBUTING.md.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ os-name }-{ target-arch }.tar.gz"
+bin-dir = "{ name }-{ os-name }-{ target-arch }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-x86_64-musl.tar.gz"
+bin-dir = "{ name }-linux-x86_64-musl/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-aarch64-musl.tar.gz"
+bin-dir = "{ name }-linux-aarch64-musl/{ bin }{ binary-ext }"
+
 [[bin]]
 name = "disk-saver"
 path = "src/main.rs"
