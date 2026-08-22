@@ -78,7 +78,10 @@ done < <(grep -E '^disk-saver[A-Za-z0-9_-]* = \{ path = ' Cargo.toml)
 # notice it going stale: a job that does not pass --locked lets cargo silently fix it up in the
 # runner and go green.
 for manifest in crates/*/Cargo.toml; do
-    name=$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$manifest" | head -n1)
+    # Quit inside sed rather than `| head -n1`: under `set -o pipefail`, head exiting after the
+    # first line leaves sed writing into a closed pipe and the pipeline reports sed's SIGPIPE.
+    # It is timing dependent, so it fails rarely and never where you are looking.
+    name=$(sed -n '/^name[[:space:]]*=/{s/^name[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p;q;}' "$manifest")
     [ -n "$name" ] || fail "could not parse package name from $manifest"
     locked=$(awk -v pkg="name = \"$name\"" '
         $0 == pkg { found = 1; next }

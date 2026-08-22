@@ -53,25 +53,39 @@ version=$(bash scripts/check-versions.sh --print)
 cargo package --workspace --no-verify --allow-dirty --locked
 
 # Every member, by the package name cargo writes into the tarball name.
+#
+# The tarball listing goes into a variable rather than down a pipe into `grep -q`. Under
+# `set -o pipefail` that pipe is a race: `grep -q` exits the moment it matches, `tar` then
+# writes into a closed pipe, and the pipeline reports *tar's* SIGPIPE failure — so a crate
+# whose LICENSE is present fails the check whenever grep happens to win. It is timing
+# dependent, which is the worst kind of release gate: it passed locally and failed on CI for
+# 4 of 17 crates in the same run.
 missing=0
 for manifest in crates/*/Cargo.toml; do
-    name=$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$manifest" | head -n1)
+    # Quit inside sed rather than `| head -n1`, which is the same SIGPIPE race in miniature.
+    name=$(sed -n '/^name[[:space:]]*=/{s/^name[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p;q;}' "$manifest")
     crate="target/package/$name-$version.crate"
     [ -f "$crate" ] || fail "$name produced no tarball at $crate"
+
+    listing=$(tar -tzf "$crate")
 
     # The license text itself, not just the SPDX expression in the manifest. Each crate
     # directory holds a symlink to the workspace LICENSE, which cargo follows when packaging —
     # so a deleted symlink is a crate published without its own license file.
-    tar -tzf "$crate" | grep -q "^$name-$version/LICENSE$" || {
+    # A here-string, not a pipe: `grep -q <<<"$listing"` is a single command, so there is no
+    # pipeline for pipefail to report and no writer to receive SIGPIPE.
+    grep -qxF "$name-$version/LICENSE" <<<"$listing" || {
         echo "  ✗ $name: no LICENSE in the tarball" >&2
         missing=1
     }
+
+    # The README is what crates.io renders as the crate's front page, and only the binary
+    # crate declares one.
+    if [ "$name" = "disk-saver" ]; then
+        grep -qxF "$name-$version/README.md" <<<"$listing" ||
+            fail "disk-saver would publish with no README (crates/cli/README.md is a symlink to the workspace one — is it still there?)"
+    fi
 done
 [ "$missing" -eq 0 ] || fail "at least one crate would publish without its license text"
-
-# The README is what crates.io renders as the crate's front page, and only the binary crate
-# declares one.
-tar -tzf "target/package/disk-saver-$version.crate" | grep -q "^disk-saver-$version/README.md$" ||
-    fail "disk-saver would publish with no README (crates/cli/README.md is a symlink to the workspace one — is it still there?)"
 
 echo "✓ every crate packages cleanly, with its license and README"
