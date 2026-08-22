@@ -7,7 +7,7 @@
 //!
 //! Two families of implementation ship here:
 //!
-//! * The production platforms — [`MacOsPlatform`] and [`LinuxPlatform`], one per
+//! * The production platforms — `MacOsPlatform` and `LinuxPlatform`, one per
 //!   file. All the OS-agnostic work (filesystem, sizing, deletion, `statvfs`,
 //!   subprocess) lives in the private `sys` module and is shared; each OS file
 //!   implements only its genuinely divergent surface (well-known directories and
@@ -39,10 +39,14 @@ pub use linux::LinuxPlatform;
 #[cfg(target_os = "macos")]
 pub use macos::MacOsPlatform;
 
-/// The concrete production [`Platform`] for the target OS: [`MacOsPlatform`] on
-/// macOS, [`LinuxPlatform`] elsewhere. Downstream crates construct
+/// The concrete production [`Platform`] for the target OS: `MacOsPlatform` on
+/// macOS, `LinuxPlatform` elsewhere. Downstream crates construct
 /// `RealPlatform::new()` and stay OS-agnostic — the alias is the only place that
 /// picks the implementation.
+///
+/// Both are named in prose rather than linked: each is `#[cfg]`-gated to its own
+/// OS, so an intra-doc link to either is a broken link on the other — including
+/// on the Linux runner that builds these docs in CI.
 #[cfg(target_os = "macos")]
 pub type RealPlatform = MacOsPlatform;
 /// The concrete production [`Platform`] for the target OS (see the macOS docs).

@@ -7,7 +7,7 @@
 //! and `.tox/`, plus `.venv/` when explicitly opted in via `include_venvs`.
 //!
 //! Everything an adapter of this kind needs is derived from the filesystem, so
-//! there is no KV state and [`observe`](PyCacheAdapter::observe) is a no-op — an
+//! there is no KV state and [`observe`](Adapter::observe) is a no-op — an
 //! artifact's age comes from its surrounding project's `last_active` time (see
 //! [`disk_saver_scan::find_artifacts`]).
 //!
@@ -21,7 +21,7 @@
 //!   given matching `exclude` globs.
 //! * `.disk-saver-keep`, dot-directory skipping and no-symlink-follow are handled
 //!   inside the scan crate; the marker is re-validated in
-//!   [`execute`](PyCacheAdapter::execute) immediately before deletion.
+//!   [`execute`](Adapter::execute) immediately before deletion.
 
 #![forbid(unsafe_code)]
 

@@ -259,7 +259,10 @@ fn node_len(kind: &NodeKind) -> u64 {
 
 /// In-memory [`Platform`] for deterministic, OS-free tests.
 ///
-/// See the [module docs](self) for the builder/recorder API and path handling.
+/// The `with_*` builder methods below construct the world; the recorder methods
+/// read back what an adapter did to it. Both are inherent on this type — the
+/// enclosing module is private, so its own documentation is never rendered,
+/// which is why this does not link to it.
 #[derive(Debug)]
 pub struct FakePlatform {
     state: Mutex<FakeState>,

@@ -2,7 +2,7 @@
 //!
 //! A small state machine — Preset → Adapters → Roots → Review → Plan — that
 //! collects the user's choices, shows the generated config (with a diff against
-//! any existing one), and returns a decided [`plan`](crate::plan) for the
+//! any existing one), and returns a decided [`plan`] for the
 //! caller to execute *after* the terminal is restored.
 
 use std::io;
