@@ -8,8 +8,10 @@
 //! * [`ConfigError`] — returned while loading, parsing, or validating the
 //!   configuration file.
 //!
-//! [`parse_adapter_config`] is the small helper every adapter factory uses to
-//! turn its opaque `[adapters.<name>]` table into a typed config struct.
+//! [`parse_adapter_config`] turns an opaque `[adapters.<name>]` table into a
+//! typed config struct. It is the primitive
+//! [`AdapterFactory::typed`](crate::AdapterFactory::typed) is built on, and
+//! calls it on every adapter's behalf — an adapter should not need it directly.
 
 /// An error surfaced by an [`Adapter`](crate::Adapter) phase.
 ///
@@ -81,7 +83,12 @@ impl ConfigError {
 ///
 /// `raw == None` (the section was absent) yields `T::default()`. Any
 /// deserialization error is mapped to [`ConfigError::Adapter`] so the user sees
-/// which adapter's config is broken. Used by every adapter factory.
+/// which adapter's config is broken.
+///
+/// [`AdapterFactory::typed`](crate::AdapterFactory::typed) calls this for every
+/// adapter, which is how an adapter comes to receive a typed config rather than
+/// a [`toml::Value`]; it is exposed here for anything that needs to parse a
+/// config table outside a factory.
 pub fn parse_adapter_config<T>(adapter: &str, raw: Option<toml::Value>) -> Result<T, ConfigError>
 where
     T: serde::de::DeserializeOwned + Default,

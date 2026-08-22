@@ -106,7 +106,8 @@ impl App {
                 continue;
             }
             let rest = section.and_then(|s| s.rest.clone());
-            let adapter = (factory.build)(rest)
+            let adapter = factory
+                .build(rest)
                 .with_context(|| format!("building adapter '{}'", factory.name))?;
             built.push(adapter);
         }

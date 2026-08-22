@@ -20,9 +20,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use disk_saver_core::{
-    Adapter, AdapterError, AdapterFactory, Candidate, Class, CommandSpec, ConfigError, Ctx,
-    Decision, DecisionKind, DecisionLog, FileKind, Outcome, Platform, RetentionPolicy,
-    parse_adapter_config,
+    Adapter, AdapterError, AdapterFactory, Candidate, Class, CommandSpec, ConfigCx, ConfigError,
+    Configured, Ctx, Decision, DecisionKind, DecisionLog, FileKind, Outcome, Platform,
+    RetentionPolicy,
 };
 use disk_saver_scan::{FsConfig, Rule, find_artifacts};
 use serde::Deserialize;
@@ -37,7 +37,12 @@ static GIT_RULE: &[Rule] = &[Rule {
     validate: |_, _| true,
 }];
 
-/// Scavenge floor when the config does not name one — see [`build`].
+/// Scavenge floor when the config does not name one.
+///
+/// Longer than [`FsConfig::MIN_AGE`], the shared floor the build-artifact
+/// adapters use: `git gc` *repacks a live repo* rather than deleting something
+/// rebuildable, so doing it to a repo touched an hour ago is work the next
+/// commit undoes, and it competes with the developer for IO.
 const DEFAULT_MIN_AGE: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// `[adapters.git-gc]`: the shared filesystem-scan config plus `aggressive`.
@@ -52,29 +57,24 @@ struct GcConfig {
 
 /// The factory the CLI registry uses to build the git-gc adapter.
 pub fn factory() -> AdapterFactory {
-    AdapterFactory { name: NAME, build }
+    AdapterFactory::typed(NAME, build)
 }
 
-fn build(raw: Option<toml::Value>) -> Result<Box<dyn Adapter>, ConfigError> {
-    // `FsConfig` defaults `min_age` to 1h, which suits adapters that delete a
-    // build artifact outright. `git gc` instead *repacks* a live repo: doing
-    // that to something touched an hour ago is work the next commit undoes, and
-    // it competes with the developer for IO. Only override when the user was
-    // silent, so an explicit `min_age = "1h"` still wins.
-    let min_age_unset = raw
-        .as_ref()
-        .and_then(toml::Value::as_table)
-        .is_none_or(|t| !t.contains_key("min_age"));
-    let mut cfg: GcConfig = parse_adapter_config(NAME, raw)?;
-    if min_age_unset {
-        cfg.fs.min_age = DEFAULT_MIN_AGE.min(cfg.fs.max_age);
-    }
-    let policy = RetentionPolicy::new(cfg.fs.max_age, cfg.fs.min_age);
-    policy.validate().map_err(|message| ConfigError::Adapter {
-        adapter: NAME.to_string(),
-        message,
-    })?;
-    Ok(Box::new(GitGcAdapter { policy, cfg }))
+/// Swap the shared scavenge floor for this adapter's own longer one, then
+/// validate the retention thresholds.
+fn build(cfg: GcConfig, cx: &ConfigCx) -> Result<GitGcAdapter, ConfigError> {
+    // `with_default` leaves an explicit `min_age = "1h"` alone and replaces only
+    // the shared default; `capped_at` then lets *our* number give way to a
+    // shorter `max_age` the user did write, while still reporting a `min_age`
+    // they set above it.
+    let min_age = Configured::from(cfg.fs.min_age)
+        .with_default(DEFAULT_MIN_AGE)
+        .capped_at(cfg.fs.max_age, cx, "min_age", "max_age")?
+        .unwrap_or(DEFAULT_MIN_AGE);
+    Ok(GitGcAdapter {
+        policy: cx.retention(cfg.fs.max_age, min_age)?,
+        cfg,
+    })
 }
 
 struct GitGcAdapter {
@@ -304,7 +304,7 @@ mod tests {
 
     /// Plan against `fake` under scavenge and report how many repos were proposed.
     fn scavenge_plan_len(fake: &FakePlatform, cfg: Option<toml::Value>) -> usize {
-        let mut a = (factory().build)(cfg).unwrap();
+        let mut a = factory().build(cfg).unwrap();
         let store = Store::open_in_memory().unwrap();
         let log = DecisionLog::disabled();
         let mut ctx = Ctx::new(
@@ -352,7 +352,7 @@ mod tests {
         // whole config unloadable.
         let cfg = Some(toml::from_str("roots = [\"~/dev\"]\nmax_age = \"30m\"\n").unwrap());
         assert!(
-            (factory().build)(cfg).is_ok(),
+            factory().build(cfg).is_ok(),
             "our own default floor must not reject the user's shorter max_age"
         );
     }
@@ -379,13 +379,13 @@ mod tests {
         // The clamp applies only to *our* default. When the user writes both
         // numbers and they contradict, that is a mistake worth reporting.
         let cfg = Some(toml::from_str("min_age = \"12h\"\nmax_age = \"30m\"\n").unwrap());
-        assert!((factory().build)(cfg).is_err());
+        assert!(factory().build(cfg).is_err());
     }
 
     #[test]
     fn unavailable_when_git_missing() {
         let fake = FakePlatform::new().with_now(t(400));
-        let mut a = (factory().build)(cfg_dev()).unwrap();
+        let mut a = factory().build(cfg_dev()).unwrap();
         let store = Store::open_in_memory().unwrap();
         let log = DecisionLog::disabled();
         let mut ctx = Ctx::new(
@@ -407,7 +407,7 @@ mod tests {
             &["-C"],
             CommandOutput::ok(COUNT_OBJECTS), // covers count-objects; gc also matches -C prefix
         );
-        let mut a = (factory().build)(cfg_dev()).unwrap();
+        let mut a = factory().build(cfg_dev()).unwrap();
         let store = Store::open_in_memory().unwrap();
         let log = DecisionLog::disabled();
         let mut ctx = Ctx::new(&fake, store.bucket(NAME), Pressure::Normal, &log);
@@ -449,7 +449,7 @@ mod tests {
                 b"ref: refs/heads/main".to_vec(),
                 recent,
             );
-        let mut a = (factory().build)(cfg_dev()).unwrap();
+        let mut a = factory().build(cfg_dev()).unwrap();
         let store = Store::open_in_memory().unwrap();
         let log = DecisionLog::disabled();
         let mut ctx = Ctx::new(

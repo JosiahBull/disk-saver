@@ -34,10 +34,10 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use disk_saver_core::{
-    Adapter, AdapterError, AdapterFactory, Candidate, Class, CommandSpec, ConfigError, Ctx,
-    Decision, DecisionKind, DecisionLog, Outcome, Pressure, RetentionPolicy, parse_adapter_config,
+    Adapter, AdapterError, AdapterFactory, Candidate, Class, CommandSpec, ConfigCx, ConfigError,
+    Ctx, Decision, DecisionKind, DecisionLog, Outcome, Pressure, RetentionPolicy,
 };
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::GlobSet;
 use serde::{Deserialize, Serialize};
 
 /// The stable adapter name (config section, KV bucket, log target).
@@ -47,48 +47,19 @@ const NAME: &str = "docker";
 const BUILD_CACHE_ID: &str = "buildcache";
 
 /// The factory the CLI registry uses to build the docker adapter.
-///
-/// `build` deserializes the adapter's `[adapters.docker]` table via
-/// [`parse_adapter_config`], compiles the `protect` globs, and validates the
-/// retention thresholds; any of these failing yields [`ConfigError::Adapter`].
 pub fn factory() -> AdapterFactory {
-    AdapterFactory { name: NAME, build }
+    AdapterFactory::typed(NAME, build)
 }
 
-/// Construct a boxed [`DockerAdapter`] from its opaque config table.
-fn build(raw: Option<toml::Value>) -> Result<Box<dyn Adapter>, ConfigError> {
-    let config: DockerConfig = parse_adapter_config(NAME, raw)?;
-
-    RetentionPolicy::new(config.max_age, config.min_age)
-        .validate()
-        .map_err(|message| ConfigError::Adapter {
-            adapter: NAME.to_string(),
-            message,
-        })?;
-
-    let protect = compile_globs(&config.protect)?;
-
-    Ok(Box::new(DockerAdapter {
+/// Compile the `protect` globs and validate the retention thresholds; either
+/// failing yields [`ConfigError::Adapter`].
+fn build(config: DockerConfig, cx: &ConfigCx) -> Result<DockerAdapter, ConfigError> {
+    Ok(DockerAdapter {
+        policy: cx.retention(config.max_age, config.min_age)?,
+        protect: cx.globs("protect", &config.protect)?,
         config,
-        protect,
         containers: Vec::new(),
         images: Vec::new(),
-    }))
-}
-
-/// Compile the `protect` glob patterns into a single [`GlobSet`].
-fn compile_globs(patterns: &[String]) -> Result<GlobSet, ConfigError> {
-    let mut builder = GlobSetBuilder::new();
-    for pat in patterns {
-        let glob = Glob::new(pat).map_err(|e| ConfigError::Adapter {
-            adapter: NAME.to_string(),
-            message: format!("invalid protect glob '{pat}': {e}"),
-        })?;
-        builder.add(glob);
-    }
-    builder.build().map_err(|e| ConfigError::Adapter {
-        adapter: NAME.to_string(),
-        message: format!("compiling protect globs: {e}"),
     })
 }
 
@@ -187,6 +158,8 @@ struct ObservedImage {
 /// bucket named `docker`.
 struct DockerAdapter {
     config: DockerConfig,
+    /// Validated at construction, so no phase re-derives it.
+    policy: RetentionPolicy,
     protect: GlobSet,
     containers: Vec<ObservedContainer>,
     images: Vec<ObservedImage>,
@@ -229,11 +202,6 @@ impl DockerAdapter {
                 out.stderr_string().trim()
             )))
         }
-    }
-
-    /// The retention policy derived from config.
-    fn policy(&self) -> RetentionPolicy {
-        RetentionPolicy::new(self.config.max_age, self.config.min_age)
     }
 
     /// Read the exited-container finish time (unix secs) via `docker inspect`.
@@ -412,7 +380,7 @@ impl Adapter for DockerAdapter {
 
     fn plan(&mut self, ctx: &mut Ctx) -> Result<Vec<Candidate>, AdapterError> {
         let now = to_unix(ctx.now());
-        let policy = self.policy();
+        let policy = self.policy;
         let pressure = ctx.pressure;
         let confirm = self.config.confirm;
         let mut candidates: Vec<Candidate> = Vec::new();

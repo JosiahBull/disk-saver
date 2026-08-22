@@ -19,13 +19,13 @@ fn day(days: u64) -> SystemTime {
 
 /// Build the adapter from default config (30d / 7d, roots `["~"]`).
 fn adapter_default() -> Box<dyn Adapter> {
-    (factory().build)(None).unwrap()
+    factory().build(None).unwrap()
 }
 
 /// Build the adapter from a small TOML snippet.
 fn adapter_from(toml: &str) -> Box<dyn Adapter> {
     let raw: toml::Value = toml::from_str(toml).unwrap();
-    (factory().build)(Some(raw)).unwrap()
+    factory().build(Some(raw)).unwrap()
 }
 
 /// A fake with the clock at day 400 (matching `FakePlatform`'s default) and one
@@ -505,7 +505,7 @@ fn the_default_incremental_floor_gives_way_to_an_explicit_max_age() {
     // user's. (Regression: it did, and broke `disk-saver plan` outright for any
     // config with a max_age under 15 minutes.)
     let raw: toml::Value = toml::from_str("max_age = \"0s\"\nmin_age = \"0s\"\n").unwrap();
-    assert!((factory().build)(Some(raw)).is_ok());
+    assert!(factory().build(Some(raw)).is_ok());
 }
 
 #[test]
@@ -515,7 +515,7 @@ fn incremental_floor_above_max_age_is_rejected() {
     // normal mode does.
     let raw: toml::Value =
         toml::from_str("max_age = \"30d\"\nincremental_min_age = \"60d\"\n").unwrap();
-    assert!((factory().build)(Some(raw)).is_err());
+    assert!(factory().build(Some(raw)).is_err());
 }
 
 #[test]

@@ -223,15 +223,28 @@ pub struct Ctx<'run> {
 }
 ```
 
-Adapter instantiation is a **factory registry** in the CLI — the adapter parses its own
-config, core never sees the schema:
+Adapter instantiation is a **factory registry** in the CLI. The adapter names the type
+its config deserializes into and core does the parsing; core never sees the *schema*, and
+the adapter never sees the raw table:
 
 ```rust
 pub struct AdapterFactory {
     pub name: &'static str,
-    /// `raw` is the adapter's `[adapters.<name>]` table (minus the reserved
-    /// `enabled` key), or None if the section is absent → adapter defaults.
-    pub build: fn(raw: Option<toml::Value>) -> Result<Box<dyn Adapter>, ConfigError>,
+    make: BuildFn,   // private: built only through `typed`
+}
+
+impl AdapterFactory {
+    /// `make` gets `C` — deserialized from the `[adapters.<name>]` table, or
+    /// `C::default()` if the section is absent → adapter defaults — plus a
+    /// `ConfigCx` carrying the adapter's name for error attribution and the
+    /// checks every adapter would otherwise repeat (`retention`, `globs`).
+    pub fn typed<C, A, F>(name: &'static str, make: F) -> Self
+    where
+        C: DeserializeOwned + Default,
+        A: Adapter + 'static,
+        F: Fn(C, &ConfigCx) -> Result<A, ConfigError> + Send + Sync + 'static;
+
+    pub fn build(&self, raw: Option<toml::Value>) -> Result<Box<dyn Adapter>, ConfigError>;
 }
 
 // crates/cli/src/registry.rs
@@ -785,8 +798,18 @@ For a tool whose job is deleting files unattended, paranoia is a feature:
 
 ## 12. Adapters (v1)
 
-Common shape: each crate exports `factory() -> AdapterFactory`, defines its own serde
-config struct (embedding `RetentionPolicy`), and keeps its state in its own KV bucket.
+Common shape: each crate exports `factory() -> AdapterFactory` built with
+`AdapterFactory::typed`, defines its own serde config struct (embedding `RetentionPolicy`),
+and keeps its state in its own KV bucket. The constructor `typed` calls receives that
+config already deserialized, so no adapter depends on `toml` outside its tests. The three
+global-cache adapters supply less still — just a name and a resolver, to
+`disk_saver_cachedir::factory`.
+
+Where a default of the adapter's own has to be reconciled with a threshold the user set,
+the config field is a `Configured<T>` (`Set` / `Default` / `Unset`) rather than a bare
+value: which of the three it is decides who gives way. Our default yields to a shorter
+`max_age`; a value the user wrote does not, and a contradictory pair is reported. See
+`rust-target`'s `incremental_min_age` and `git-gc`'s `min_age`.
 
 ### 12.1 `docker` — containers, images, build cache
 

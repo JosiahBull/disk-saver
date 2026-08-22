@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use disk_saver_core::{
-    Adapter, AdapterError, Candidate, Class, ConfigError, Ctx, Decision, DecisionKind, DecisionLog,
-    Outcome, Platform, RetentionPolicy, expand_tilde,
+    Adapter, AdapterError, AdapterFactory, Candidate, Class, ConfigCx, ConfigError, Ctx, Decision,
+    DecisionKind, DecisionLog, Outcome, Platform, RetentionPolicy, expand_tilde,
 };
 use serde::Deserialize;
 
@@ -87,23 +87,24 @@ pub struct CacheDirAdapter {
     extra: Vec<PathBuf>,
 }
 
+/// The factory for a cache-directory adapter: a stable `name` and the
+/// [`Resolver`] that finds its directories is the whole of what a cache adapter
+/// crate has to supply. Deserializing [`CacheConfig`] and validating the
+/// retention thresholds both happen here.
+pub fn factory(name: &'static str, resolver: Resolver) -> AdapterFactory {
+    AdapterFactory::typed(name, move |cfg: CacheConfig, cx: &ConfigCx| {
+        CacheDirAdapter::new(resolver, cfg, cx)
+    })
+}
+
 impl CacheDirAdapter {
-    /// Build from a name, a resolver, and the parsed config. Validates the
-    /// retention thresholds.
-    pub fn new(
-        name: &'static str,
-        resolver: Resolver,
-        cfg: CacheConfig,
-    ) -> Result<Self, ConfigError> {
-        let policy = RetentionPolicy::new(cfg.max_age, cfg.min_age);
-        policy.validate().map_err(|message| ConfigError::Adapter {
-            adapter: name.to_string(),
-            message,
-        })?;
+    /// Build from a resolver and the parsed config; the adapter's name comes
+    /// from `cx`. Validates the retention thresholds.
+    pub fn new(resolver: Resolver, cfg: CacheConfig, cx: &ConfigCx) -> Result<Self, ConfigError> {
         Ok(CacheDirAdapter {
-            name,
+            name: cx.name(),
             resolver,
-            policy,
+            policy: cx.retention(cfg.max_age, cfg.min_age)?,
             confirm: cfg.confirm,
             extra: cfg.paths,
         })
@@ -258,7 +259,7 @@ mod tests {
     }
 
     fn adapter(cfg: CacheConfig) -> CacheDirAdapter {
-        CacheDirAdapter::new("tool", resolver, cfg).unwrap()
+        CacheDirAdapter::new(resolver, cfg, &ConfigCx::new("tool")).unwrap()
     }
 
     fn ctx_run<F, R>(fake: &FakePlatform, pressure: Pressure, f: F) -> R
@@ -369,7 +370,8 @@ mod tests {
             vec![0u8; 4096],
             t(300),
         );
-        let mut a = CacheDirAdapter::new("tool", nested, CacheConfig::default()).unwrap();
+        let mut a =
+            CacheDirAdapter::new(nested, CacheConfig::default(), &ConfigCx::new("tool")).unwrap();
         let plan = ctx_run(&fake, Pressure::Normal, |ctx| a.plan(ctx).unwrap());
         assert_eq!(plan.len(), 1, "nested dir collapses into its ancestor");
         assert!(plan[0].id.ends_with(".store"));

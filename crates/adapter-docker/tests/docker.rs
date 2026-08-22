@@ -43,13 +43,13 @@ fn fake_with_version() -> FakePlatform {
 
 /// Build the adapter from default config.
 fn adapter_default() -> Box<dyn Adapter> {
-    (factory().build)(None).unwrap()
+    factory().build(None).unwrap()
 }
 
 /// Build the adapter from a small TOML snippet.
 fn adapter_from(toml: &str) -> Box<dyn Adapter> {
     let raw: toml::Value = toml::from_str(toml).unwrap();
-    (factory().build)(Some(raw)).unwrap()
+    factory().build(Some(raw)).unwrap()
 }
 
 // ── availability ─────────────────────────────────────────────────────────
@@ -629,11 +629,11 @@ fn confirm_true_flags_candidates_for_confirmation() {
 fn inverted_retention_thresholds_are_rejected() {
     // min_age > max_age must fail the factory build.
     let raw: toml::Value = toml::from_str("max_age = \"2d\"\nmin_age = \"7d\"").unwrap();
-    assert!((factory().build)(Some(raw)).is_err());
+    assert!(factory().build(Some(raw)).is_err());
 }
 
 #[test]
 fn bad_protect_glob_is_rejected() {
     let raw: toml::Value = toml::from_str("protect = [\"[unterminated\"]").unwrap();
-    assert!((factory().build)(Some(raw)).is_err());
+    assert!(factory().build(Some(raw)).is_err());
 }

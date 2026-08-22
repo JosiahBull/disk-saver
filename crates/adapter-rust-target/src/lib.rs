@@ -71,9 +71,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use disk_saver_core::{
-    Adapter, AdapterError, AdapterFactory, Candidate, Class, ConfigError, Ctx, Decision,
-    DecisionKind, DecisionLog, FileKind, Outcome, Platform, Pressure, RetentionPolicy,
-    expand_tilde, parse_adapter_config,
+    Adapter, AdapterError, AdapterFactory, Candidate, Class, ConfigCx, ConfigError, Configured,
+    Ctx, Decision, DecisionKind, DecisionLog, FileKind, Outcome, Platform, Pressure,
+    RetentionPolicy, expand_tilde,
 };
 use disk_saver_scan::{FsConfig, Rule, ScanOptions, find_artifacts};
 use serde::Deserialize;
@@ -111,7 +111,8 @@ const INCREMENTAL_MAX_DEPTH: usize = 2;
 /// Floor for the incremental sweep when the config does not name one.
 ///
 /// Being a default it never overrules an explicit `max_age`: [`build`] lowers it
-/// to `max_age` when the user did not set it themselves.
+/// to `max_age` rather than contradicting it. A floor the *user* names is
+/// honoured, and one above `max_age` is reported.
 ///
 /// Much shorter than the 1h `FsConfig::min_age` that guards a whole `target/`,
 /// and deliberately so: deleting an incremental cache leaves every compiled
@@ -133,69 +134,47 @@ pub struct RustTargetConfig {
     ///
     /// Independent of `min_age`, which governs the whole `target/`. Set it to a
     /// large value to disable the sweep in all but the most idle projects.
-    #[serde(with = "humantime_serde")]
-    pub incremental_min_age: Duration,
+    #[serde(with = "disk_saver_core::configured::humantime")]
+    pub incremental_min_age: Configured<Duration>,
 }
 
 impl Default for RustTargetConfig {
     fn default() -> Self {
         RustTargetConfig {
             fs: FsConfig::default(),
-            incremental_min_age: DEFAULT_INCREMENTAL_MIN_AGE,
+            incremental_min_age: Configured::Default(DEFAULT_INCREMENTAL_MIN_AGE),
         }
     }
 }
 
 /// The factory the CLI registry uses to build the `rust-target` adapter.
-///
-/// `build` deserializes the `[adapters.rust-target]` table via
-/// [`parse_adapter_config`] into a [`RustTargetConfig`] and validates the
-/// retention thresholds; a failure yields [`ConfigError`].
 pub fn factory() -> AdapterFactory {
-    AdapterFactory { name: NAME, build }
+    AdapterFactory::typed(NAME, build)
 }
 
-/// Construct a boxed [`FsAdapter`] from its opaque config table.
-fn build(raw: Option<toml::Value>) -> Result<Box<dyn Adapter>, ConfigError> {
-    // Whether the user named the sweep floor themselves, decided before `raw` is
-    // consumed — the two cases below are handled differently.
-    let incremental_unset = raw
-        .as_ref()
-        .and_then(toml::Value::as_table)
-        .is_none_or(|t| !t.contains_key("incremental_min_age"));
-    let mut cfg: RustTargetConfig = parse_adapter_config(NAME, raw)?;
-
-    RetentionPolicy::new(cfg.fs.max_age, cfg.fs.min_age)
-        .validate()
-        .map_err(|message| ConfigError::Adapter {
-            adapter: NAME.into(),
-            message,
-        })?;
+/// Validate the retention thresholds and resolve the sweep floor against
+/// `max_age`; either failing yields [`ConfigError::Adapter`].
+fn build(cfg: RustTargetConfig, cx: &ConfigCx) -> Result<FsAdapter, ConfigError> {
+    let policy = cx.retention(cfg.fs.max_age, cfg.fs.min_age.unwrap_or(FsConfig::MIN_AGE))?;
 
     // The sweep floor obeys the same invariant `min_age` does: a floor above the
     // normal-mode threshold would have scavenge protecting more than normal mode
     // does, which is backwards. How to enforce that depends on whose number it
-    // is. A config saying `max_age = "0s"` means "collect this the moment it is
-    // idle", and our *default* has no business turning that into a hard error —
-    // so when the user was silent the default gives way. An explicit pair that
+    // is, which is what `Configured` remembers — a config saying `max_age =
+    // "0s"` means "collect this the moment it is idle", and our *default* has no
+    // business turning that into a hard error, whereas an explicit pair that
     // contradicts itself is a real mistake and is reported.
-    if incremental_unset {
-        cfg.incremental_min_age = cfg.incremental_min_age.min(cfg.fs.max_age);
-    } else if cfg.incremental_min_age > cfg.fs.max_age {
-        return Err(ConfigError::Adapter {
-            adapter: NAME.into(),
-            message: format!(
-                "incremental_min_age ({:?}) must not exceed max_age ({:?})",
-                cfg.incremental_min_age, cfg.fs.max_age
-            ),
-        });
-    }
+    let incremental_min_age = cfg
+        .incremental_min_age
+        .capped_at(cfg.fs.max_age, cx, "incremental_min_age", "max_age")?
+        .unwrap_or(DEFAULT_INCREMENTAL_MIN_AGE);
 
-    Ok(Box::new(FsAdapter {
-        policy: RetentionPolicy::new(cfg.fs.max_age, cfg.fs.min_age),
+    Ok(FsAdapter {
+        policy,
         confirm: cfg.fs.confirm,
+        incremental_min_age,
         cfg,
-    }))
+    })
 }
 
 /// The `rust-target` adapter.
@@ -207,6 +186,8 @@ struct FsAdapter {
     policy: RetentionPolicy,
     cfg: RustTargetConfig,
     confirm: bool,
+    /// The sweep floor, already reconciled with `max_age` at construction.
+    incremental_min_age: Duration,
 }
 
 impl FsAdapter {
@@ -242,7 +223,7 @@ impl FsAdapter {
             Pressure::Comfortable | Pressure::Normal => return false,
             Pressure::Scavenge { .. } => {}
         }
-        if age < self.cfg.incremental_min_age {
+        if age < self.incremental_min_age {
             return false;
         }
 

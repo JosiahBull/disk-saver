@@ -28,9 +28,8 @@
 use std::path::{Path, PathBuf};
 
 use disk_saver_core::{
-    Adapter, AdapterError, AdapterFactory, Candidate, Class, ConfigError, Ctx, Decision,
+    Adapter, AdapterError, AdapterFactory, Candidate, Class, ConfigCx, ConfigError, Ctx, Decision,
     DecisionKind, DecisionLog, FileKind, Outcome, Platform, RetentionPolicy, expand_tilde,
-    parse_adapter_config,
 };
 use disk_saver_scan::{FsConfig, Rule, ScanOptions, find_artifacts};
 use globset::{Glob, GlobSetBuilder};
@@ -96,39 +95,21 @@ fn pycache_only_pyc(p: &dyn Platform, dir: &Path) -> bool {
 }
 
 /// The factory the CLI registry uses to build the `python-cache` adapter.
-///
-/// `build` deserializes the `[adapters.python-cache]` table via
-/// [`parse_adapter_config`], validates the retention thresholds and the
-/// `exclude` globs, and returns a boxed adapter. Any failure yields
-/// [`ConfigError::Adapter`].
 pub fn factory() -> AdapterFactory {
-    AdapterFactory { name: NAME, build }
+    AdapterFactory::typed(NAME, build)
 }
 
-/// Construct a boxed [`PyCacheAdapter`] from its opaque config table.
-fn build(raw: Option<toml::Value>) -> Result<Box<dyn Adapter>, ConfigError> {
-    let cfg: PyConfig = parse_adapter_config(NAME, raw)?;
-
-    RetentionPolicy::new(cfg.fs.max_age, cfg.fs.min_age)
-        .validate()
-        .map_err(|message| ConfigError::Adapter {
-            adapter: NAME.to_string(),
-            message,
-        })?;
-
+/// Validate the retention thresholds and the `exclude` globs; either failing
+/// yields [`ConfigError::Adapter`].
+fn build(cfg: PyConfig, cx: &ConfigCx) -> Result<PyCacheAdapter, ConfigError> {
+    let policy = cx.retention(cfg.fs.max_age, cfg.fs.min_age.unwrap_or(FsConfig::MIN_AGE))?;
     // Surface a bad exclude glob at config time rather than mid-run.
-    cfg.fs.glob_set().map_err(|e| ConfigError::Adapter {
-        adapter: NAME.to_string(),
-        message: format!("invalid exclude glob: {e}"),
-    })?;
-
-    let policy = RetentionPolicy::new(cfg.fs.max_age, cfg.fs.min_age);
-    let confirm = cfg.fs.confirm;
-    Ok(Box::new(PyCacheAdapter {
+    cx.wrap(cfg.fs.glob_set(), "invalid exclude glob")?;
+    Ok(PyCacheAdapter {
         policy,
+        confirm: cfg.fs.confirm,
         cfg,
-        confirm,
-    }))
+    })
 }
 
 /// Typed view of the `[adapters.python-cache]` table: the shared filesystem
@@ -383,7 +364,7 @@ mod tests {
     /// flatten path).
     fn adapter(toml_src: &str) -> Box<dyn Adapter> {
         let raw: toml::Value = toml::from_str(toml_src).unwrap();
-        build(Some(raw)).unwrap()
+        factory().build(Some(raw)).unwrap()
     }
 
     /// Run `plan` against a fake platform at the given pressure.
@@ -419,7 +400,7 @@ mod tests {
     #[test]
     fn build_rejects_inverted_thresholds() {
         let raw: toml::Value = toml::from_str("max_age = \"2d\"\nmin_age = \"9d\"").unwrap();
-        assert!(build(Some(raw)).is_err());
+        assert!(factory().build(Some(raw)).is_err());
     }
 
     #[test]

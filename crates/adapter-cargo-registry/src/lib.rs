@@ -16,8 +16,7 @@
 
 use std::path::PathBuf;
 
-use disk_saver_cachedir::{CacheConfig, CacheDirAdapter};
-use disk_saver_core::{Adapter, AdapterFactory, ConfigError, Platform, parse_adapter_config};
+use disk_saver_core::{AdapterFactory, Platform};
 
 /// The adapter's stable name (config section, KV bucket, log target).
 const NAME: &str = "cargo-registry";
@@ -33,14 +32,11 @@ fn resolver(p: &dyn Platform) -> Vec<PathBuf> {
     ]
 }
 
-/// The factory the CLI registry uses to build the cargo-registry adapter.
+/// The factory the CLI registry uses to build the cargo-registry adapter. Everything
+/// but the name and the `resolver` is shared with the other
+/// cache-directory adapters.
 pub fn factory() -> AdapterFactory {
-    AdapterFactory { name: NAME, build }
-}
-
-fn build(raw: Option<toml::Value>) -> Result<Box<dyn Adapter>, ConfigError> {
-    let cfg: CacheConfig = parse_adapter_config(NAME, raw)?;
-    Ok(Box::new(CacheDirAdapter::new(NAME, resolver, cfg)?))
+    disk_saver_cachedir::factory(NAME, resolver)
 }
 
 #[cfg(test)]
@@ -71,7 +67,7 @@ mod tests {
             // The index is not a resolver target, so it must never be proposed.
             .with_file("~/.cargo/registry/index/idx/cache", vec![0u8; 1024], t(300));
 
-        let mut a = (factory().build)(None).unwrap();
+        let mut a = factory().build(None).unwrap();
         let store = Store::open_in_memory().unwrap();
         let log = DecisionLog::disabled();
         let mut ctx = Ctx::new(&fake, store.bucket(NAME), Pressure::Normal, &log);
@@ -101,7 +97,7 @@ mod tests {
             vec![0u8; 8192],
             t(100),
         );
-        let mut a = (factory().build)(None).unwrap();
+        let mut a = factory().build(None).unwrap();
         let store = Store::open_in_memory().unwrap();
         let log = DecisionLog::disabled();
         let mut ctx = Ctx::new(&fake, store.bucket(NAME), Pressure::Comfortable, &log);

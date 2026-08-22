@@ -20,12 +20,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use disk_saver_core::{
-    Adapter, AdapterError, AdapterFactory, Candidate, Class, CommandSpec, ConfigError, Ctx,
-    Decision, DecisionKind, DecisionLog, FileKind, Outcome, Platform, RetentionPolicy,
-    parse_adapter_config,
+    Adapter, AdapterError, AdapterFactory, Candidate, Class, CommandSpec, ConfigCx, ConfigError,
+    Ctx, Decision, DecisionKind, DecisionLog, FileKind, Outcome, Platform, RetentionPolicy,
 };
 use disk_saver_scan::{FsConfig, Rule, find_artifacts};
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::GlobSet;
 use serde::Deserialize;
 
 /// The adapter's stable name (config section, KV bucket, log target).
@@ -89,7 +88,7 @@ impl IgnoredConfig {
             exclude: self.exclude.clone(),
             max_depth: self.max_depth,
             max_age: self.max_age,
-            min_age: self.min_age,
+            min_age: Some(self.min_age),
             confirm: self.confirm,
         }
     }
@@ -97,34 +96,18 @@ impl IgnoredConfig {
 
 /// The factory the CLI registry uses to build the git-ignored adapter.
 pub fn factory() -> AdapterFactory {
-    AdapterFactory { name: NAME, build }
+    AdapterFactory::typed(NAME, build)
 }
 
-fn build(raw: Option<toml::Value>) -> Result<Box<dyn Adapter>, ConfigError> {
-    let cfg: IgnoredConfig = parse_adapter_config(NAME, raw)?;
-    let policy = RetentionPolicy::new(cfg.max_age, cfg.min_age);
-    policy.validate().map_err(|message| ConfigError::Adapter {
-        adapter: NAME.to_string(),
-        message,
-    })?;
-    let mut builder = GlobSetBuilder::new();
-    for pattern in &cfg.protect {
-        let glob = Glob::new(pattern).map_err(|e| ConfigError::Adapter {
-            adapter: NAME.to_string(),
-            message: format!("invalid protect glob '{pattern}': {e}"),
-        })?;
-        builder.add(glob);
-    }
-    let protect = builder.build().map_err(|e| ConfigError::Adapter {
-        adapter: NAME.to_string(),
-        message: format!("building protect glob set: {e}"),
-    })?;
-    Ok(Box::new(GitIgnoredAdapter {
-        policy,
+/// Validate the retention thresholds and compile the `protect` globs; either
+/// failing yields [`ConfigError::Adapter`].
+fn build(cfg: IgnoredConfig, cx: &ConfigCx) -> Result<GitIgnoredAdapter, ConfigError> {
+    Ok(GitIgnoredAdapter {
+        policy: cx.retention(cfg.max_age, cfg.min_age)?,
         confirm: cfg.confirm,
-        protect,
+        protect: cx.globs("protect", &cfg.protect)?,
         cfg,
-    }))
+    })
 }
 
 struct GitIgnoredAdapter {
@@ -341,7 +324,7 @@ mod tests {
     #[test]
     fn plans_ignored_objects_flagged_and_protects_env() {
         let fake = fake_repo();
-        let mut a = (factory().build)(cfg_dev()).unwrap();
+        let mut a = factory().build(cfg_dev()).unwrap();
         let store = Store::open_in_memory().unwrap();
         let log = DecisionLog::disabled();
         let mut ctx = Ctx::new(
@@ -370,7 +353,7 @@ mod tests {
     #[test]
     fn execute_removes_files_and_dirs_but_refuses_protected() {
         let fake = fake_repo();
-        let mut a = (factory().build)(cfg_dev()).unwrap();
+        let mut a = factory().build(cfg_dev()).unwrap();
         let store = Store::open_in_memory().unwrap();
         let log = DecisionLog::disabled();
         let mut ctx = Ctx::new(
@@ -406,7 +389,7 @@ mod tests {
     #[test]
     fn unavailable_without_git() {
         let fake = FakePlatform::new().with_now(t(400));
-        let mut a = (factory().build)(cfg_dev()).unwrap();
+        let mut a = factory().build(cfg_dev()).unwrap();
         let store = Store::open_in_memory().unwrap();
         let log = DecisionLog::disabled();
         let mut ctx = Ctx::new(

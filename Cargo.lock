@@ -351,7 +351,6 @@ dependencies = [
  "disk-saver-core",
  "disk-saver-kv",
  "disk-saver-platform",
- "toml",
 ]
 
 [[package]]
@@ -437,7 +436,6 @@ dependencies = [
  "disk-saver-core",
  "disk-saver-kv",
  "disk-saver-platform",
- "toml",
 ]
 
 [[package]]
@@ -496,7 +494,6 @@ dependencies = [
  "disk-saver-platform",
  "humantime-serde",
  "serde",
- "toml",
  "tracing",
 ]
 

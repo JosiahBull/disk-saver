@@ -14,6 +14,7 @@
 pub mod adapter;
 pub mod approvals;
 pub mod config;
+pub mod configured;
 pub mod decision;
 pub mod engine;
 pub mod error;
@@ -22,12 +23,13 @@ pub mod throttle;
 pub mod types;
 
 // ── core surface (flat re-exports) ──────────────────────────────────────────
-pub use adapter::{Adapter, AdapterFactory, Ctx};
+pub use adapter::{Adapter, AdapterFactory, ConfigCx, Ctx};
 pub use approvals::{ApprovalState, Approvals, QueuedItem};
 pub use config::{
     AdapterSection, Config, GlobalConfig, NotificationConfig, NotificationEvent, ScheduleConfig,
     Threshold, expand_tilde,
 };
+pub use configured::Configured;
 pub use decision::{Decision, DecisionKind, DecisionLog};
 #[cfg(feature = "decision-log")]
 pub use decision::{RecordedDecision, read_decisions};

@@ -33,9 +33,8 @@
 use std::path::{Path, PathBuf};
 
 use disk_saver_core::{
-    Adapter, AdapterError, AdapterFactory, Candidate, Class, ConfigError, Ctx, Decision,
+    Adapter, AdapterError, AdapterFactory, Candidate, Class, ConfigCx, ConfigError, Ctx, Decision,
     DecisionKind, DecisionLog, FileKind, Outcome, Platform, RetentionPolicy, expand_tilde,
-    parse_adapter_config,
 };
 use disk_saver_scan::{FsConfig, Rule, ScanOptions, find_artifacts};
 
@@ -52,32 +51,18 @@ static RULES: &[Rule] = &[Rule {
 }];
 
 /// The factory the CLI registry uses to build the `node-modules` adapter.
-///
-/// `build` deserializes the `[adapters.node-modules]` table into an
-/// [`FsConfig`] via [`parse_adapter_config`] and validates the retention
-/// thresholds; a bad config yields [`ConfigError::Adapter`].
 pub fn factory() -> AdapterFactory {
-    AdapterFactory { name: NAME, build }
+    AdapterFactory::typed(NAME, build)
 }
 
-/// Construct a boxed [`FsAdapter`] from its opaque config table.
-fn build(raw: Option<toml::Value>) -> Result<Box<dyn Adapter>, ConfigError> {
-    let cfg: FsConfig = parse_adapter_config(NAME, raw)?;
-
-    RetentionPolicy::new(cfg.max_age, cfg.min_age)
-        .validate()
-        .map_err(|message| ConfigError::Adapter {
-            adapter: NAME.to_string(),
-            message,
-        })?;
-
-    let policy = RetentionPolicy::new(cfg.max_age, cfg.min_age);
-    let confirm = cfg.confirm;
-    Ok(Box::new(FsAdapter {
-        policy,
+/// Validate the retention thresholds; a bad pair yields
+/// [`ConfigError::Adapter`].
+fn build(cfg: FsConfig, cx: &ConfigCx) -> Result<FsAdapter, ConfigError> {
+    Ok(FsAdapter {
+        policy: cx.retention(cfg.max_age, cfg.min_age.unwrap_or(FsConfig::MIN_AGE))?,
+        confirm: cfg.confirm,
         cfg,
-        confirm,
-    }))
+    })
 }
 
 /// The `node-modules` adapter. Constructed by [`factory`]; holds no run-to-run

@@ -362,14 +362,16 @@ pub struct FsConfig {
     #[serde(with = "humantime_serde")]
     pub max_age: Duration,
     /// Scavenge floor: items younger than this are never deleted, whatever the
-    /// disk pressure. Defaults to 1 hour.
+    /// disk pressure. `None` when the config did not name one, in which case the
+    /// adapter picks the floor — usually [`FsConfig::MIN_AGE`].
     ///
-    /// Short on purpose. Everything these adapters delete is a build artifact
-    /// that regenerates from sources already on disk, so under real pressure the
-    /// only cost of being wrong is a rebuild. `git-gc` overrides this upward —
-    /// see its own default.
+    /// That default is short on purpose. Everything these adapters delete is a
+    /// build artifact that regenerates from sources already on disk, so under
+    /// real pressure the only cost of being wrong is a rebuild. `git-gc` repacks
+    /// a live repo instead and wants a longer floor, which is why the choice is
+    /// left to the adapter rather than baked in here.
     #[serde(with = "humantime_serde")]
-    pub min_age: Duration,
+    pub min_age: Option<Duration>,
     /// Whether deletions should be routed to the approvals queue for
     /// confirmation rather than run automatically. Defaults to `false`.
     pub confirm: bool,
@@ -382,13 +384,19 @@ impl Default for FsConfig {
             exclude: Vec::new(),
             max_depth: 8,
             max_age: Duration::from_secs(30 * 24 * 60 * 60),
-            min_age: Duration::from_secs(60 * 60),
+            min_age: None,
             confirm: false,
         }
     }
 }
 
 impl FsConfig {
+    /// The scavenge floor adapters use when [`min_age`](FsConfig::min_age) is
+    /// `None` — short, because everything these adapters delete regenerates from
+    /// sources already on disk. An adapter that deletes something dearer than a
+    /// build artifact names its own instead.
+    pub const MIN_AGE: Duration = Duration::from_secs(60 * 60);
+
     /// Compile [`exclude`](FsConfig::exclude) into a [`globset::GlobSet`].
     ///
     /// Returns the underlying [`globset::Error`] on the first bad pattern; it
@@ -966,7 +974,8 @@ mod tests {
         assert_eq!(c.max_depth, 8);
         assert_eq!(c.max_age, Duration::from_secs(30 * 24 * 60 * 60));
         // Deliberately short — build artifacts regenerate from sources on disk.
-        assert_eq!(c.min_age, Duration::from_secs(60 * 60));
+        assert_eq!(c.min_age, None);
+        assert_eq!(FsConfig::MIN_AGE, Duration::from_secs(60 * 60));
         assert!(!c.confirm);
     }
 
@@ -989,8 +998,8 @@ mod tests {
         assert_eq!(cfg.exclude, vec!["**/vendor/**".to_string()]);
         assert_eq!(cfg.max_depth, 4);
         assert_eq!(cfg.max_age, Duration::from_secs(45 * 24 * 60 * 60));
-        // min_age omitted → default 1h.
-        assert_eq!(cfg.min_age, Duration::from_secs(60 * 60));
+        // min_age omitted → left to the adapter, which uses `MIN_AGE`.
+        assert_eq!(cfg.min_age, None);
         assert!(cfg.confirm);
     }
 

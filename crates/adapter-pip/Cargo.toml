@@ -11,8 +11,8 @@ repository.workspace = true
 disk-saver-core.workspace = true
 disk-saver-platform.workspace = true
 disk-saver-cachedir.workspace = true
-toml.workspace = true
 
 [dev-dependencies]
 disk-saver-platform = { workspace = true, features = ["test-util"] }
+toml.workspace = true
 disk-saver-kv.workspace = true

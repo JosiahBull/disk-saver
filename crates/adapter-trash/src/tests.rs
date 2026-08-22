@@ -23,7 +23,7 @@ fn try_build(cfg: &str) -> Result<Box<dyn Adapter>, ConfigError> {
     } else {
         Some(toml::from_str::<toml::Value>(cfg).expect("test config is valid TOML"))
     };
-    build(raw)
+    factory().build(raw)
 }
 
 /// A `.trashinfo` sidecar body.

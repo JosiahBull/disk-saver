@@ -29,10 +29,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use disk_saver_core::{
-    Adapter, AdapterError, AdapterFactory, Candidate, Class, ConfigError, Ctx, Decision,
-    DecisionKind, DecisionLog, FileKind, Outcome, Platform, RetentionPolicy, parse_adapter_config,
+    Adapter, AdapterError, AdapterFactory, Candidate, Class, ConfigCx, ConfigError, Ctx, Decision,
+    DecisionKind, DecisionLog, FileKind, Outcome, Platform, RetentionPolicy,
 };
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::GlobSet;
 use serde::{Deserialize, Serialize};
 
 /// The adapter's stable machine name (config section, KV bucket, log target).
@@ -126,39 +126,19 @@ struct RawEntry {
     xdg_date: Option<SystemTime>,
 }
 
-/// Build the trash adapter from its opaque config table.
+/// Build the trash adapter from its config table.
 pub fn factory() -> AdapterFactory {
-    AdapterFactory { name: NAME, build }
+    AdapterFactory::typed(NAME, build)
 }
 
-/// The factory `build` function (a plain fn so it coerces to a fn pointer).
-fn build(raw: Option<toml::Value>) -> Result<Box<dyn Adapter>, ConfigError> {
-    let cfg: TrashConfig = parse_adapter_config(NAME, raw)?;
-
-    let policy = RetentionPolicy::new(cfg.max_age, cfg.min_age);
-    policy.validate().map_err(|message| ConfigError::Adapter {
-        adapter: NAME.to_owned(),
-        message,
-    })?;
-
-    let mut builder = GlobSetBuilder::new();
-    for pattern in &cfg.protect {
-        let glob = Glob::new(pattern).map_err(|e| ConfigError::Adapter {
-            adapter: NAME.to_owned(),
-            message: format!("invalid protect glob '{pattern}': {e}"),
-        })?;
-        builder.add(glob);
-    }
-    let protect = builder.build().map_err(|e| ConfigError::Adapter {
-        adapter: NAME.to_owned(),
-        message: format!("building protect glob set: {e}"),
-    })?;
-
-    Ok(Box::new(TrashAdapter {
-        policy,
+/// Validate the retention thresholds and compile the `protect` globs; either
+/// failing yields [`ConfigError::Adapter`].
+fn build(cfg: TrashConfig, cx: &ConfigCx) -> Result<TrashAdapter, ConfigError> {
+    Ok(TrashAdapter {
+        policy: cx.retention(cfg.max_age, cfg.min_age)?,
         confirm: cfg.confirm,
-        protect,
-    }))
+        protect: cx.globs("protect", &cfg.protect)?,
+    })
 }
 
 impl Adapter for TrashAdapter {
