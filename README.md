@@ -170,10 +170,15 @@ For a tool that deletes files unattended, paranoia is a feature:
 ## Development
 
 ```sh
-cargo test --workspace --all-features
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+./scripts/install-hooks.sh    # once per clone: runs the fast CI gates before each commit
+./scripts/test.sh             # cargo test --workspace --all-features
+./scripts/check-clippy.sh     # -D warnings
 cargo fmt --all
 ```
+
+Every CI gate is a script in `scripts/`, and each job runs the same script you do — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the full list, the lint policy, and how a release is
+cut.
 
 The workspace is a tiny engine (`disk-saver-core`) orchestrating independent adapters, all
 talking to the OS through a single `Platform` trait — so every adapter is integration-tested

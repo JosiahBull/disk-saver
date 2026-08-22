@@ -3,3 +3,11 @@
 
 # macOS
 .DS_Store
+
+# cargo-mutants
+mutants.out
+mutants.out.old
+
+# Local release staging (the Release workflow uses a runner-only directory of the
+# same name; keeping it ignored means a local dry run of the same steps is clean).
+/release/

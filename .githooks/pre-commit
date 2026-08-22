@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+#
+# Mirrors the deterministic gates in .github/workflows/ci.yml, cheapest first, so most failures
+# never reach a runner. Each line runs the same script the corresponding CI job runs, so the
+# hook and CI cannot drift on flags.
+#
+# ONE LINE PER REQUIRED GATE, and the mapping is written out so a gap is visible rather than
+# inferred. Gate is a single required context that depends on all thirteen jobs in ci.yml; this
+# hook covers seven of them, and half of an eighth:
+#
+#   Versions              → scripts/check-versions.sh
+#   Workspace deps        → scripts/check-workspace-deps.sh
+#   Workflows             → scripts/check-workflows.sh
+#   Format                → scripts/check-fmt.sh
+#   Clippy                → scripts/check-clippy.sh
+#   Tests                 → scripts/test.sh
+#   Check                 → subsumed by Clippy, which compiles the same targets
+#   Dependencies          → HALF: scripts/check-dependabot.sh runs here, cargo-udeps does not
+#
+# Deliberately absent, each because it needs a toolchain, a target directory or the network that
+# a commit hook has no business assuming:
+#
+#   Documentation         → a full rustdoc pass, and a broken intra-doc link is cheap to fix late
+#   Features              → four more feature unions, so four more compiles of most of the tree
+#   MSRV                  → a second toolchain, and its own target directory
+#   Package               → the crates.io index, plus seventeen tarballs
+#   Build                 → the release profile: fat LTO at codegen-units = 1
+#
+# Adding a job to ci.yml without adding it here is the failure this table exists to make
+# obvious.
+#
+# Order is by cost. The four text-and-metadata checks take about a second between them, and
+# each guards something a person edits by hand and cannot check by eye — the 0.x ignore list, a
+# version that lives in three places, and whether Gate still covers every job. Clippy compiles
+# the workspace, so test.sh sits directly behind it and pays for little beyond linking and
+# running.
+#
+# It is a convenience, not a guarantee: Gate in CI is what protects main. Being bypassable
+# (`--no-verify`) and per clone (`core.hooksPath`) is exactly why the slow gates can be left to
+# CI without weakening anything.
+#
+# Installed per clone by scripts/install-hooks.sh.
+# Bypass with: git commit --no-verify
+
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+run() {
+    echo "▶ $*"
+    "$@"
+}
+
+run bash scripts/check-versions.sh
+run bash scripts/check-dependabot.sh
+run bash scripts/check-workspace-deps.sh
+run bash scripts/check-workflows.sh
+run bash scripts/check-fmt.sh
+run bash scripts/check-clippy.sh
+run bash scripts/test.sh
+
+echo "✓ pre-commit checks passed (7 of Gate's 13 jobs; the rest need a toolchain or the network)"
