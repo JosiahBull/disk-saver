@@ -1,7 +1,9 @@
 # disk-saver — Architecture & Design
 
-**Status:** Draft for review (rev 2) — nothing below is implemented yet.
-**Targets:** macOS + Linux. Rust 2024 edition, workspace already scaffolded.
+**Status:** Implemented; shipping as v0.1. This is the design of record — it describes what
+the code does and why it does it that way. §20 records the decisions that moved between the
+original design draft and the shipped program.
+**Targets:** macOS + Linux. Rust 2024 edition, MSRV 1.88.
 
 `disk-saver` is a small, boring, trustworthy janitor. It wakes up on a schedule, looks at
 how much disk space is free, and — only if space is actually needed — deletes things that
@@ -25,15 +27,15 @@ queues the item and asks the user to confirm.
 9. [User confirmation](#9-user-confirmation)
 10. [Robustness & failure handling](#10-robustness--failure-handling)
 11. [Safety guardrails](#11-safety-guardrails)
-12. [Adapters (v1)](#12-adapters-v1)
+12. [Adapters](#12-adapters)
 13. [CLI surface](#13-cli-surface)
 14. [Scheduling & adaptive cadence](#14-scheduling--adaptive-cadence)
 15. [Observability: logs, decision records, notifications](#15-observability-logs-decision-records-notifications)
 16. [Testing strategy](#16-testing-strategy)
 17. [Dependencies](#17-dependencies)
 18. [Design decisions & tradeoffs](#18-design-decisions--tradeoffs)
-19. [Delivery milestones](#19-delivery-milestones)
-20. [Open questions](#20-open-questions)
+19. [Delivery history](#19-delivery-history)
+20. [Decisions taken since the draft](#20-decisions-taken-since-the-draft)
 21. [Future adapter ideas](#21-future-adapter-ideas)
 
 ---
@@ -139,25 +141,34 @@ crates/
   platform/                package: disk-saver-platform   trait Platform + RealPlatform + FakePlatform
   kv/                      package: disk-saver-kv         sqlite key-value store
   scan/                    package: disk-saver-scan       shared project/artifact-dir walker
+  cachedir/                package: disk-saver-cachedir   shared global-cache-dir engine
+  installer/               package: disk-saver-installer   standalone interactive TUI installer
   adapter-docker/          package: disk-saver-adapter-docker
   adapter-node-modules/    package: disk-saver-adapter-node-modules
   adapter-rust-target/     package: disk-saver-adapter-rust-target
   adapter-python-cache/    package: disk-saver-adapter-python-cache
   adapter-trash/           package: disk-saver-adapter-trash
+  adapter-pnpm/            package: disk-saver-adapter-pnpm            (on cachedir)
+  adapter-cargo-registry/  package: disk-saver-adapter-cargo-registry  (on cachedir)
+  adapter-pip/             package: disk-saver-adapter-pip             (on cachedir)
+  adapter-git-gc/          package: disk-saver-adapter-git-gc          (on scan)
+  adapter-git-ignored/     package: disk-saver-adapter-git-ignored     (on scan)
 ```
 
-(Later additions, same shapes: `cachedir/` backs the `pnpm`/`cargo-registry`/`pip`
-cache adapters; `adapter-git-gc/` and `adapter-git-ignored/` are git-repo adapters; and
-`installer/` — package `disk-saver-installer` — is a standalone interactive TUI installer,
-excluded from `default-members` and the *only* crate pulling `ratatui`, so the shipped
-`disk-saver` binary stays TUI-free.)
+Two of those are shaped unlike the rest. `cachedir` is a second shared engine alongside
+`scan`: where `scan` walks `roots` hunting for artifact directories, `cachedir` prunes a
+small fixed set of directories a developer tool owns, so the three adapters built on it
+supply only a name and a resolver (§12.6). And `installer` is a binary, not a library — it
+is excluded from `default-members` and is the *only* crate pulling `ratatui`, so the shipped
+`disk-saver` binary stays TUI-free and a plain `cargo build` never compiles it.
 
 Dependency graph (arrows = "depends on"):
 
 ```
 cli ─► every adapter ─► core ─► kv
   │        │              └───► platform
-  │        └─(fs adapters)───► scan ─► platform
+  │        ├─(fs adapters)───► scan ─────► platform
+  │        └─(cache adapters)► cachedir ─► platform
   └─► core, kv, platform
 ```
 
@@ -166,7 +177,11 @@ cli ─► every adapter ─► core ─► kv
   the error taxonomy, the approvals queue, the decision log, and the engine
   (orchestration lives here, not in the CLI).
 - `scan` holds the walker shared by the filesystem adapters (node_modules / rust target /
-  python caches are the same problem with different markers).
+  python caches are the same problem with different markers), plus the `FsConfig` those
+  adapters share for root resolution, the built-in denylist and the retention thresholds.
+  The two git adapters reuse it with a `.git` rule.
+- `cachedir` holds the whole lifecycle for a global cache directory — config, age, size,
+  eligibility, deletion, decision records — so a cache adapter is a name and a resolver.
 - `cli` is thin: argument parsing, logging setup, config loading, the static adapter
   registry, the interactive `review` flow, and scheduling install/uninstall.
 
@@ -176,10 +191,14 @@ The CLI exposes one cargo feature per adapter (all on by default), plus `decisio
 ```toml
 # crates/cli/Cargo.toml
 [features]
-default = ["docker", "node-modules", "rust-target", "python-cache", "trash", "decision-log"]
+default = [
+    "docker", "node-modules", "rust-target", "python-cache", "trash",
+    "pnpm", "cargo-registry", "pip", "git-gc", "git-ignored",
+    "decision-log",
+]
 docker       = ["dep:disk-saver-adapter-docker"]
 decision-log = ["disk-saver-core/decision-log"]
-# ...
+# ...one feature per adapter; each gates a `dep:` on its crate.
 ```
 
 ---
@@ -796,7 +815,13 @@ For a tool whose job is deleting files unattended, paranoia is a feature:
 
 ---
 
-## 12. Adapters (v1)
+## 12. Adapters
+
+Ten of them ship, in four families: docker (§12.1) stands alone on KV-tracked usage; five
+walk `roots` on `disk-saver-scan` looking for a marker (§12.2–12.4, §12.7–12.8); three prune
+a global cache directory on `disk-saver-cachedir` (§12.6); and trash (§12.5) is its own
+cross-platform case. Numbering follows the order they were built, not the order the engine
+runs them — that is by impact class (§8).
 
 Common shape: each crate exports `factory() -> AdapterFactory` built with
 `AdapterFactory::typed`, defines its own serde config struct (embedding `RetentionPolicy`),
@@ -898,6 +923,96 @@ Also the first confirmation-gated adapter.*
 | Confirmation | `confirm = true` **by default**: trash items queue for `disk-saver review` rather than auto-deleting. Users who want the old fully-automatic behaviour set `confirm = false`. |
 | Not v1 | External-volume trashes (`/Volumes/*/.Trashes`), network trash. |
 | Defaults | `max_age = "60d"`, `min_age = "7d"`, `confirm = true` |
+
+### 12.6 `pnpm`, `cargo-registry`, `pip` — global tool caches
+
+*Three thin crates over one shared engine in `disk-saver-cachedir`.*
+
+Where the filesystem adapters walk `roots` hunting for a marker, these target a small fixed
+set of directories that a developer tool owns. Each such directory is one coarse candidate:
+sized with `Platform::dir_size`, aged by its most recent activity, classed `Class::Cache`, and
+removed wholesale once past policy. An adapter crate supplies a name and a resolver:
+
+```rust
+pub type Resolver = fn(&dyn Platform) -> Vec<PathBuf>;
+pub fn factory(name: &'static str, resolver: Resolver) -> AdapterFactory;
+```
+
+Config, age, size, eligibility, deletion and decision records all live in the engine, so each
+of these three crates is a few dozen lines. A resolver returns candidate paths for *every*
+supported OS layout and lets `plan` filter to the ones that exist — so an adapter finds the
+cache regardless of which OS created it, without branching on `target_os`. Discovery is
+best-effort by design: a resolver whose tool is missing returns what it can.
+
+| Adapter | Prunes | Discovery |
+|---|---|---|
+| `pnpm` | content-addressable store + metadata cache | `pnpm store path` when pnpm is installed (authoritative), else the known store/cache layouts. The `store` subdirectory only — the pnpm *binary* can live in the parent data dir. |
+| `cargo-registry` | `registry/cache`, `registry/src`, `git/db`, `git/checkouts` under `~/.cargo` | fixed paths, each aged independently, so an active `registry/src` survives while a stale `git/checkouts` is reclaimed. The registry **index** is deliberately left alone: small, and slow to refetch. |
+| `pip` | pip's HTTP/wheel cache | `~/Library/Caches/pip`, `~/.cache/pip`, plus `Platform::user_cache_dir()` so an `$XDG_CACHE_HOME` override is still honored. |
+
+| | |
+|---|---|
+| Class | **Cache** — regenerable, but costs bandwidth and time |
+| Age | `max(dir mtime, newest child mtime)`, one level deep — *not* a recursive walk |
+| KV state | none; age derives from the filesystem |
+| Config | `max_age`, `min_age`, `confirm`, plus `paths = [...]` for a non-standard location |
+| Defaults | `max_age = "30d"`, `min_age = "6h"`, `confirm = false` |
+| Not v1 | `$CARGO_HOME` / `$PIP_CACHE_DIR` are not read — point `paths` at a relocated cache |
+
+Two deliberate choices. The **age probe stops at one level**: these directories hold thousands
+of entries and their top level moves whenever the tool writes, so a recursive walk would cost
+a great deal to learn the same thing. And **`min_age` is 6h** against the build-artifact
+adapters' 1h (§12.2–12.4), because refilling one of these means re-downloading from a
+registry — a cache touched earlier today is worth strictly more than a `target/` of the same
+size, which rebuilds from sources already on disk.
+
+### 12.7 `git-gc` — repacking idle repositories
+
+*The only adapter that reclaims space without deleting its candidate: it shrinks `.git` in
+place.*
+
+| | |
+|---|---|
+| Availability | `git --version` via `run_command`; missing or non-zero ⇒ `Unavailable` |
+| Discovers | repos under `roots` via `disk-saver-scan` with a `.git` rule (no required sibling), sharing the fs-adapter root/denylist resolution (`FsConfig::resolve_walk`) |
+| Sizes | `git count-objects -v` → loose-object size + garbage (KiB). Zero ⇒ nothing worth packing, so no candidate is produced |
+| Executes | `git gc` (plus `--aggressive` if configured), reporting the bytes `.git` actually shrank |
+| Class | **Rebuildable** — only packfile layout and *unreachable* objects change; reachable history is never touched |
+| Config | `FsConfig` (`roots`, `exclude`, `max_depth`, `max_age`, `min_age`, `confirm`) + `aggressive = false` |
+| Defaults | `max_age = "30d"`, `min_age = "6h"`, `confirm = false` |
+
+The **`min_age` floor is 6h**, not the shared `FsConfig::MIN_AGE` of 1h: `git gc` repacks a
+*live* repo rather than deleting something rebuildable, so running it against a repo touched
+an hour ago is work the next commit undoes, and it competes with the developer for IO. That
+floor is *ours* rather than the user's — a `Configured::Default`, so it yields to a shorter
+`max_age` somebody actually wrote, while still reporting a `min_age` they set above it (§4.4).
+
+Age-gating also means the repos git would auto-gc anyway — the ones being worked in — are left
+alone. The win here is one-time, on a repo untouched for a month.
+
+### 12.8 `git-ignored` — ignored objects in repositories
+
+*The second confirmation-gated adapter, and the one with the most room to do harm.*
+
+A `.gitignore` covers exactly the things worth reclaiming — build outputs, dependency dirs,
+logs, local databases — and also things that would hurt to lose: a local `.env`, a dev
+database, uncommitted scratch work. So this adapter proposes and never disposes.
+
+| | |
+|---|---|
+| Availability | `git --version`; missing or non-zero ⇒ `Unavailable` |
+| Discovers | repos under `roots` — same `.git` rule and shared resolution as §12.7 |
+| Plans | `git clean -Xdn` per repo — **ignored objects only**, never tracked and never plain-untracked files — filtered by policy age and by the `protect` globs |
+| Class | **UserData** — the last scavenge wave, after every rebuildable and every cache |
+| Confirmation | `confirm = true` **by default**: candidates queue for `disk-saver review` (§9) |
+| Config | `roots`, `exclude`, `max_depth`, `max_age`, `min_age`, `confirm`, `protect` |
+| Defaults | `max_age = "30d"`, `min_age = "7d"`, `confirm = true`, `protect = ["*env*"]` |
+
+`protect` matches an entry's **final path component** and defaults to `["*env*"]`, so `.env`,
+`venv`, `env/` and friends are never proposed. It is checked twice: once while planning, and
+again in `execute` immediately before removal — so an approval that has been sitting in the
+queue cannot delete a path that a config change has since protected. The second check is
+redundant by construction, which is the point.
 
 ---
 
@@ -1043,12 +1158,12 @@ monitorable by launchd/systemd without parsing output.
 | Layer | Approach |
 |---|---|
 | `kv` | Unit tests on in-memory sqlite: round-trips, bucket isolation, prefix iteration. |
-| `platform` | `FakePlatform` unit-tested itself (it's load-bearing test infra). `RealPlatform` gets a small tempdir-based suite; CI matrix should add a macOS runner (currently ubuntu-only). |
+| `platform` | `FakePlatform` unit-tested itself (it's load-bearing test infra). `RealPlatform` gets a tempdir-based suite covering the invariants that only bite on a real filesystem: symlinks are never followed when sizing or deleting, a cross-device child is left intact, relative paths are refused, and `run_command` survives a chatty child and enforces its timeout. Both OSes run it — clippy and tests are a `[ubuntu-latest, macos-latest]` matrix, because roughly every adapter has a `cfg(target_os)` branch and a single-OS run compiles one side of each. |
 | **Adapters** | **The payoff of the Platform design.** Pure-Rust integration tests, no OS, no docker, deterministic: build a fake world → `observe` → advance the fake clock → `plan`/`execute` → assert the exact set of `remove_*` calls, KV contents, and outcomes. Table-driven scenario tests: cold state + grace period, daemon down (`Unavailable`), pressure transitions, `min_age` floor under scavenge, protect globs, `.disk-saver-keep`, `confirm = true` producing flagged candidates, partial execute failure. Docker fixtures = canned CLI JSON in `tests/fixtures/`. Every adapter's suite lives in `tests/<adapter>.rs` and reaches the crate only through `factory()` + the `Adapter` trait — no `use super::*`, so a test can't be satisfied by an internal it shouldn't know about. The sole exception is `adapter-trash`, whose `.trashinfo` date parser and `io::Error`→`AdapterError` mapping have no route in from outside (`FakePlatform` cannot inject `PermissionDenied`); those three keep a small `#[cfg(test)]` module in `src/tests.rs`. Adding a private-helper unit test means arguing for that exception. |
 | Engine (`core`) | Scripted stub adapters: panic isolation, error isolation, comfortable ⇒ zero plan/execute calls, **wave ordering** (Rebuildable exhausted before Cache before UserData) and early-stop when the fake free space rises past target, **flagged candidates land in `_approvals` and are never executed**, queue rebuild/GC semantics, **throttle gate** (fake clock: due/not-due/pressure-cadence), notification events + `min_gap` dedupe (FakePlatform records them), lock contention, exit codes. |
 | Confirmation flow | e2e: seed a queue → `review --list --json` asserts contents → `review --approve <id>` deletes via the adapter and records outcomes; interactive path smoke-tested with scripted stdin. |
-| End-to-end | `assert_cmd` tests of the binary against a tempdir config/state: `config init` → `plan --json` → asserts on output. Real-docker smoke tests exist but are `#[ignore]`d (dev machines only). |
-| CI | Existing fmt/clippy/test workflow; add a macOS job when `RealPlatform` lands, and a **feature-matrix build** (`--no-default-features`, without `decision-log`) so the compiled-out path can't rot. |
+| End-to-end | `assert_cmd` tests of the binary against a tempdir config/state: `config init` → `plan --json` → asserts on output; plus the `review`/`schedule` flows in `tests/stage2.rs`. There are no `#[ignore]`d tests and nothing in the suite touches a real docker, filesystem root or scheduler — the whole suite runs on a clean machine with no daemons, which is what makes it worth running on every commit. |
+| CI | Thirteen jobs in `ci.yml`, aggregated behind a single required `Gate` context that `needs:` every one of them — so adding a job makes it a merge gate automatically, with no list of check names to keep in sync. Beyond fmt/clippy/test: a **feature matrix** (the unions `--all-features` cannot reach, so the `decision-log`-off ZST and an adapter-trimmed CLI can't rot), rustdoc under `-D warnings`, an MSRV compile on the declared `rust-version`, `cargo-udeps`, `cargo-autoinherit`, a release-profile build (fat LTO is not something a debug build exercises), `cargo package` for every crate, and actionlint + shellcheck over the workflows and scripts. Every gate is a script in `scripts/`, run identically by CI and by the pre-commit hook, so the two cannot drift on flags. `release.yml` *calls* `ci.yml` on a tag, so a release runs the same suite a pull request does. |
 
 ---
 
@@ -1068,7 +1183,8 @@ Kept deliberately lean; all versions pinned once in `[workspace.dependencies]`:
 | `rustix` | statvfs (disk usage) in `RealPlatform` |
 | `fd-lock` | single-instance lock |
 | `globset` | protect/exclude patterns |
-| `assert_cmd`, `tempfile` (dev) | e2e tests |
+| `ratatui`, `similar` | the TUI installer only (§3) — never linked into the shipped binary |
+| `assert_cmd`, `predicates`, `tempfile` (dev) | e2e tests |
 
 Notably absent: no async runtime (§18), no `chrono` (std `SystemTime` + humantime
 suffice), no `sysinfo` (statvfs is 20 lines), no notification crate (osascript/
@@ -1133,9 +1249,11 @@ depends on `ratatui`).
 
 ---
 
-## 19. Delivery milestones
+## 19. Delivery history
 
-Each lands green and independently reviewable:
+All six landed; v0.1 is cut. Kept because the ordering is the argument for the architecture:
+each milestone was green and independently reviewable, which is only possible because the
+`Platform` trait let every adapter be tested before any real OS integration existed.
 
 1. **Foundations** — `kv` crate; `platform` crate with `Platform` (incl. `notify`),
    `RealPlatform` (Linux+macOS), `FakePlatform`; `core` with config loading (global +
@@ -1156,46 +1274,63 @@ Each lands green and independently reviewable:
 6. **Hardening** — macOS CI job, feature-matrix CI, e2e tests, soak on real machines
    behind `--dry-run`, then README + `config init` polish. Cut v0.1.
 
+Since v0.1, in the same shapes and without touching the engine — which is the claim the
+trait boundary was making: the `cachedir` engine and the `pnpm`/`cargo-registry`/`pip`
+adapters on top of it (§12.6); the two git adapters (§12.7–12.8); the `rust-target`
+incremental sweep; the `Configured<T>` three-state config so an adapter default and a user
+threshold can be reconciled rather than silently ranked (§4.4); the TUI installer; and the
+release pipeline — cosign-signed archives for six targets, gated on the same `ci.yml` a
+pull request runs.
+
 ---
 
-## 20. Open questions
+## 20. Decisions taken since the draft
 
-1. **Default `roots` for filesystem adapters:** `["~"]` with a denylist (works with zero
-   config, but walks a lot) vs. requiring explicit roots (safe + fast, but silently does
-   nothing until configured)? Current lean: default `["~"]`, skip dot-dirs, denylist
-   `~/Library` etc., `max_depth = 8`.
-2. **Trash `confirm = true` by default** means trash is never emptied without a
-   `disk-saver review` — maximally safe, but if you never run `review` it effectively
-   makes the trash adapter advisory-only. Happy with that default, or should trash
-   auto-delete at `max_age` and only require confirmation for the *scavenge* (younger
-   than max_age) cases?
-3. **`.venv` handling** — proposed opt-in only. Agree?
-4. **Docker volumes** — permanently out, or future opt-in with its own (long) policy?
-5. **Trash on external volumes** — worth doing eventually, or scope-creep?
-6. **Cadence defaults** — `check_every = 1h`, `run_every = 12h`, `pressure_run_every =
-   1h`: reasonable? (Hourly wake is ~1ms of work; could go to 30m for faster pressure
-   response.)
-7. **Notification defaults** — all four events on by default with `min_gap = 12h`?
-8. **`decision-log` default-on** — agreed, or would you rather lean builds be the default?
-9. Is per-file cargo `target/` trimming (cargo-sweep-style, vs. whole-dir removal) worth
-   it eventually? Whole-dir is v1.
+The design draft closed with nine open questions. All nine are settled in the shipped
+program. They are recorded as answers rather than deleted, because otherwise a reader of the
+code cannot tell which defaults were chosen and which were merely inherited.
+
+1. **Default `roots` is `["~"]`.** Zero-config beat safe-but-inert: an adapter that does
+   nothing until configured is the failure mode nobody notices until the disk is full. The
+   walk is bounded instead — `max_depth = 8`, dot-directories skipped, and a built-in
+   denylist (`~/Library`, `~/.Trash`, cache dirs) applied to *both* roots and excludes, so a
+   configured root at or under a denied path is dropped rather than quietly walked.
+2. **Trash keeps `confirm = true`.** The alternative — auto-delete at `max_age`, confirm only
+   under scavenge — was rejected: it makes the answer to "can this empty my trash behind my
+   back?" *"usually not"* instead of *"no"*, and that hard guarantee is worth more than the
+   bytes. Advisory-until-reviewed is the real cost; `approvals_pending` notifications
+   (§15.3) are what keep it from being silent. `confirm = false` remains available.
+3. **`.venv` is opt-in** (`include_venvs = true`). Regenerable in principle, expensive in
+   practice, and frequently the only copy of a pinned wheel set.
+4. **Docker volumes are permanently out**, not deferred. A volume is the one docker object
+   holding data nothing can rebuild, and no age heuristic separates a stale volume from a
+   database somebody needs next month.
+5. **External-volume trash stays out.** Scope creep, and an unmounted volume makes the
+   KV age record meaningless in the unsafe direction.
+6. **Cadence unchanged** — `check_every = 1h`, `run_every = 12h`, `pressure_run_every = 1h`.
+   The 30m option was not taken: the hourly wake already costs about a millisecond, and what
+   actually bounds response time under pressure is `pressure_run_every`, not the timer.
+7. **All four notification events ship on, `min_gap = 12h`.** A janitor that deletes without
+   saying so is the surprise this design exists to avoid; the gap keeps that from becoming
+   noise.
+8. **`decision-log` ships on.** Explainability is a core value of the tool, not something a
+   user should have to know to opt into. Lean builds still pay nothing — the ZST pattern
+   (§15.2) keeps call sites identical, and the CI feature matrix stops the compiled-out path
+   from rotting.
+9. **Per-file `target/` trimming was not built.** The scavenge-only `incremental` sweep
+   (§12.2–12.4) answered the same need for a fraction of the machinery: since cargo never
+   reclaims anything, the win was in the one directory cargo *rewrites* under a changing key,
+   not in per-file granularity across all the ones it keeps.
 
 ---
 
 ## 21. Future adapter ideas
 
-Several adapters have since shipped beyond the v1 set:
-- Global caches `pnpm`, `cargo-registry`, `pip`, built on a shared `disk-saver-cachedir` engine —
-  a well-known cache directory treated as one coarse `Class::Cache` candidate, aged by its most
-  recent activity and removed wholesale past policy, with a `paths` config knob for non-standard
-  locations. The same engine makes the remaining cache-dir ideas below cheap to add.
-- `git-gc` (`Class::Rebuildable`) runs `git gc` on idle repos to shrink `.git` non-destructively,
-  reporting the bytes reclaimed; and `git-ignored` (`Class::UserData`, `confirm = true`) removes
-  git-ignored objects (`git clean -Xdn`) via the approvals queue, protecting `*env*` names by
-  default. Both discover repos through `disk-saver-scan` (a `.git` rule) and share the fs-adapter
-  root/denylist resolution (`FsConfig::resolve_walk`).
+Nothing here is committed to. The two shared engines are what make most of them small: a new
+global cache is a name and a resolver against `cachedir` (§12.6), and anything keyed off a
+repo or project marker is a `Rule` against `scan`.
 
-The trait makes these cheap to add later, in rough priority order: Homebrew
+In rough priority order: Homebrew
 (`brew cleanup` + cache), Xcode `DerivedData`, npm/yarn global stores, sccache, `uv`
 global cache, Go module/build cache (`~/go/pkg/mod`, `go clean -cache`), container image
 stores for podman/nerdctl, JetBrains/VS Code caches, `journalctl --vacuum-size` (Linux),
