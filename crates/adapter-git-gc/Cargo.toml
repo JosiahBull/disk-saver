@@ -19,3 +19,6 @@ tracing.workspace = true
 disk-saver-platform = { workspace = true, features = ["test-util"] }
 toml.workspace = true
 disk-saver-kv.workspace = true
+
+[lints]
+workspace = true

@@ -181,4 +181,4 @@ against an in-memory fake with a controllable clock, no real filesystem or docke
 
 ## License
 
-MIT OR Apache-2.0.
+MIT — see [`LICENSE`](LICENSE).

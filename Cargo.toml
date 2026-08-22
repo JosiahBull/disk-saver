@@ -9,31 +9,32 @@ default-members = ["crates/cli"]
 # Shared package metadata. Crates opt in via `edition.workspace = true`, etc.
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+
+rust-version = "1.88"
 version = "0.1.0"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/josiahbull/disk-saver"
+license = "MIT"
+repository = "https://github.com/JosiahBull/disk-saver"
 
 # Centralized dependency versions. Crates reference these with
 # `some-dep.workspace = true` so versions stay in sync across the workspace.
 [workspace.dependencies]
 # ── internal crates ──
-disk-saver-core = { path = "crates/core" }
-disk-saver-kv = { path = "crates/kv" }
-disk-saver-platform = { path = "crates/platform" }
-disk-saver-scan = { path = "crates/scan" }
-disk-saver-cachedir = { path = "crates/cachedir" }
-disk-saver-adapter-docker = { path = "crates/adapter-docker" }
-disk-saver-adapter-pnpm = { path = "crates/adapter-pnpm" }
-disk-saver-adapter-cargo-registry = { path = "crates/adapter-cargo-registry" }
-disk-saver-adapter-pip = { path = "crates/adapter-pip" }
-disk-saver-adapter-git-gc = { path = "crates/adapter-git-gc" }
-disk-saver-adapter-git-ignored = { path = "crates/adapter-git-ignored" }
-disk-saver-installer = { path = "crates/installer" }
-disk-saver-adapter-node-modules = { path = "crates/adapter-node-modules" }
-disk-saver-adapter-rust-target = { path = "crates/adapter-rust-target" }
-disk-saver-adapter-python-cache = { path = "crates/adapter-python-cache" }
-disk-saver-adapter-trash = { path = "crates/adapter-trash" }
+disk-saver-core = { path = "crates/core", version = "0.1.0" }
+disk-saver-kv = { path = "crates/kv", version = "0.1.0" }
+disk-saver-platform = { path = "crates/platform", version = "0.1.0" }
+disk-saver-scan = { path = "crates/scan", version = "0.1.0" }
+disk-saver-cachedir = { path = "crates/cachedir", version = "0.1.0" }
+disk-saver-adapter-docker = { path = "crates/adapter-docker", version = "0.1.0" }
+disk-saver-adapter-pnpm = { path = "crates/adapter-pnpm", version = "0.1.0" }
+disk-saver-adapter-cargo-registry = { path = "crates/adapter-cargo-registry", version = "0.1.0" }
+disk-saver-adapter-pip = { path = "crates/adapter-pip", version = "0.1.0" }
+disk-saver-adapter-git-gc = { path = "crates/adapter-git-gc", version = "0.1.0" }
+disk-saver-adapter-git-ignored = { path = "crates/adapter-git-ignored", version = "0.1.0" }
+disk-saver-installer = { path = "crates/installer", version = "0.1.0" }
+disk-saver-adapter-node-modules = { path = "crates/adapter-node-modules", version = "0.1.0" }
+disk-saver-adapter-rust-target = { path = "crates/adapter-rust-target", version = "0.1.0" }
+disk-saver-adapter-python-cache = { path = "crates/adapter-python-cache", version = "0.1.0" }
+disk-saver-adapter-trash = { path = "crates/adapter-trash", version = "0.1.0" }
 
 # ── external ──
 anyhow = "1"
@@ -59,6 +60,35 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 assert_cmd = "2"
 tempfile = "3"
 predicates = "3"
+
+[workspace.lints.rust]
+# There is no unsafe code in the workspace today, and a disk janitor running unattended is a
+# poor place for the first block. Deny now, while the cost of the rule is zero.
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+# Unfinished code should not reach a release that is signed and published.
+todo = "deny"
+unimplemented = "deny"
+# Debugging leftovers.
+dbg_macro = "deny"
+# Pushing an absolute path onto a PathBuf silently replaces the whole buffer rather than
+# extending it, so `root.push(entry)` with an absolute `entry` produces a path that has
+# nothing to do with `root`. Every deletion in this program is a path built this way.
+path_buf_push_overwrite = "deny"
+# `FileType::is_file()` being false does not mean "directory" — a symlink, socket or fifo also
+# answers false. The walkers must never follow a symlink, so the distinction is load-bearing.
+filetype_is_file = "deny"
+# Free-space thresholds and percentages are floats, and `==` on a float is almost always a
+# latent bug. `lossy_float_literal` catches a literal the type cannot actually represent.
+float_cmp = "deny"
+lossy_float_literal = "deny"
+# Skips the destructor: for anything holding a file descriptor or a lock that is a leak, not
+# an optimisation. `fd-lock` guards concurrent runs of this binary.
+mem_forget = "deny"
+# Byte-slicing a string panics on a non-char boundary rather than returning an error.
+string_slice = "deny"
+inefficient_to_string = "deny"
 
 [profile.release]
 opt-level = 3

@@ -16,3 +16,6 @@ disk-saver-core.workspace = true
 clap.workspace = true
 ratatui.workspace = true
 similar.workspace = true
+
+[lints]
+workspace = true

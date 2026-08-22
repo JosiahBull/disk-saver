@@ -29,3 +29,6 @@ decision-log = []
 [dev-dependencies]
 disk-saver-platform = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
+
+[lints]
+workspace = true

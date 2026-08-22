@@ -35,6 +35,10 @@ pub(crate) fn home_dir() -> PathBuf {
 
 /// Map a std [`fs::FileType`] to our [`FileKind`], reporting symlinks as
 /// [`FileKind::Symlink`] (i.e. assuming the type came from symlink metadata).
+#[expect(
+    clippy::filetype_is_file,
+    reason = "the regular-file/Other split is the purpose of this arm"
+)]
 fn kind_from_file_type(ft: fs::FileType) -> FileKind {
     if ft.is_symlink() {
         FileKind::Symlink
@@ -95,6 +99,10 @@ pub(crate) fn read_to_string(path: &Path) -> io::Result<String> {
 /// Recursively sum apparent file sizes under `path`, staying on device `dev`
 /// and never following symlinks. `md` is `path`'s already-fetched symlink
 /// metadata.
+#[expect(
+    clippy::filetype_is_file,
+    reason = "only a regular file has a meaningful len(); fifos and sockets count as zero"
+)]
 fn size_on_device(path: &Path, md: &fs::Metadata, dev: u64) -> io::Result<u64> {
     let ft = md.file_type();
     if ft.is_symlink() {
