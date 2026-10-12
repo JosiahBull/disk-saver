@@ -53,10 +53,6 @@ updates:
         update-types: ["version-update:semver-minor"]
       - dependency-name: "rusqlite"
         update-types: ["version-update:semver-minor"]
-      - dependency-name: "rustix"
-        update-types: ["version-update:semver-minor"]
-      - dependency-name: "toml"
-        update-types: ["version-update:semver-minor"]
       - dependency-name: "tracing"
         update-types: ["version-update:semver-minor"]
       - dependency-name: "tracing-appender"

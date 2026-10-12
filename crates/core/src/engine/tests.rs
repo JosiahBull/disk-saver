@@ -724,7 +724,7 @@ fn aggressive_prune_notification_fires_when_scavenge_deletes_young_items() {
         "body should name the single young casualty and its age: {body}"
     );
     assert!(
-        body.contains("4.1 KB") || body.contains("4.0 KB"),
+        body.contains("4.1 kB"),
         "body should report only the young item's bytes: {body}"
     );
     assert_eq!(
