@@ -100,7 +100,7 @@ pub fn show(app: &App) -> Result<u8> {
 fn threshold_str(t: &Threshold) -> String {
     match t {
         Threshold::Percent(p) => format!("{p}%"),
-        Threshold::Absolute(b) => bytesize::ByteSize(*b).to_string(),
+        Threshold::Absolute(b) => bytesize::ByteSize(*b).display().si().to_string(),
     }
 }
 

@@ -21,7 +21,7 @@ jobs:
     steps:
       - name: Fetch update metadata
         id: metadata
-        uses: dependabot/fetch-metadata@v2
+        uses: dependabot/fetch-metadata@v3.1.0
 
       # Cargo majors are already excluded in dependabot.yml, and so are 0.x minors — which
       # Dependabot miscategorises as minor although they are breaking. This is the backstop that

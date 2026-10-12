@@ -8,7 +8,7 @@ use disk_saver_core::{AdapterStatus, Class, RunReport};
 
 /// Format a byte count for human display (e.g. `1.2 GB`).
 pub fn bytes(n: u64) -> String {
-    bytesize::ByteSize(n).to_string()
+    bytesize::ByteSize(n).display().si().to_string()
 }
 
 /// Print a run report as pretty JSON.

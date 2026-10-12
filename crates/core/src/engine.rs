@@ -895,7 +895,7 @@ fn to_unix(t: SystemTime) -> u64 {
 
 /// Best-effort human size for notification text.
 fn human_bytes(b: u64) -> String {
-    bytesize::ByteSize(b).to_string()
+    bytesize::ByteSize(b).display().si().to_string()
 }
 
 /// Truncate an age to whole minutes for display.
