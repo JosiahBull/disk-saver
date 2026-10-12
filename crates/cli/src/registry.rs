@@ -29,6 +29,14 @@ pub fn registry() -> Vec<AdapterFactory> {
         disk_saver_adapter_cargo_registry::factory(),
         #[cfg(feature = "pip")]
         disk_saver_adapter_pip::factory(),
+        #[cfg(feature = "nvm")]
+        disk_saver_adapter_nvm::factory(),
+        #[cfg(feature = "uv")]
+        disk_saver_adapter_uv::factory(),
+        #[cfg(feature = "npm")]
+        disk_saver_adapter_npm::factory(),
+        #[cfg(feature = "homebrew")]
+        disk_saver_adapter_homebrew::factory(),
         #[cfg(feature = "git-ignored")]
         disk_saver_adapter_git_ignored::factory(),
         #[cfg(feature = "trash")]

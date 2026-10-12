@@ -59,6 +59,10 @@ impl Platform for MacOsPlatform {
         sys::home_dir()
     }
 
+    fn env_var(&self, name: &str) -> Option<String> {
+        std::env::var(name).ok().filter(|value| !value.is_empty())
+    }
+
     fn trash_dirs(&self) -> Vec<PathBuf> {
         vec![self.home_dir().join(".Trash")]
     }

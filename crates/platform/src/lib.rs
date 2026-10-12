@@ -76,6 +76,11 @@ pub trait Platform: Send + Sync {
     /// The user's home directory (`$HOME`).
     fn home_dir(&self) -> PathBuf;
 
+    /// Read an environment variable without exposing OS APIs to adapters.
+    fn env_var(&self, _name: &str) -> Option<String> {
+        None
+    }
+
     /// Trash directories to sweep. macOS: `[~/.Trash]`; Linux:
     /// `[~/.local/share/Trash]` (honoring `$XDG_DATA_HOME`).
     fn trash_dirs(&self) -> Vec<PathBuf>;

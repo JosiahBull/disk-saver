@@ -63,6 +63,11 @@ disk-saver-adapter-pip = { workspace = true, optional = true }
 disk-saver-adapter-git-gc = { workspace = true, optional = true }
 disk-saver-adapter-git-ignored = { workspace = true, optional = true }
 
+disk-saver-adapter-nvm = { workspace = true, optional = true }
+disk-saver-adapter-uv = { workspace = true, optional = true }
+disk-saver-adapter-npm = { workspace = true, optional = true }
+disk-saver-adapter-homebrew = { workspace = true, optional = true }
+
 clap.workspace = true
 anyhow.workspace = true
 serde.workspace = true
@@ -87,6 +92,10 @@ default = [
     "pip",
     "git-gc",
     "git-ignored",
+    "nvm",
+    "uv",
+    "npm",
+    "homebrew",
     "decision-log",
 ]
 docker = ["dep:disk-saver-adapter-docker"]
@@ -99,6 +108,10 @@ cargo-registry = ["dep:disk-saver-adapter-cargo-registry"]
 pip = ["dep:disk-saver-adapter-pip"]
 git-gc = ["dep:disk-saver-adapter-git-gc"]
 git-ignored = ["dep:disk-saver-adapter-git-ignored"]
+nvm = ["dep:disk-saver-adapter-nvm"]
+uv = ["dep:disk-saver-adapter-uv"]
+npm = ["dep:disk-saver-adapter-npm"]
+homebrew = ["dep:disk-saver-adapter-homebrew"]
 decision-log = ["disk-saver-core/decision-log"]
 
 [dev-dependencies]
