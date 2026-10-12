@@ -517,6 +517,33 @@ max_age    = "30d"
 min_age    = "6h"       # packing a repo mid-session is wasted work, so not 1h
 aggressive = false      # pass --aggressive (slower, sometimes smaller)
 
+[adapters.nvm]
+roots = ["~/dev"]     # project pins to protect during Node retirement
+max_age = "90d"
+min_age = "30d"
+include_versions = true # installed versions ALWAYS require approval
+confirm = true         # also ask before removing downloaded archives
+# nvm_dir = "~/.nvm"   # otherwise uses NVM_DIR, then ~/.nvm
+# protect = ["v24.18.1"] # extra version/alias specifications to retain
+
+[adapters.uv]
+max_age = "30d"
+min_age = "7d"
+confirm = true         # native prune; candidate size is an upper bound
+# cache_dir = "~/.cache/uv" # otherwise uses `uv cache dir`
+
+[adapters.npm]
+max_age = "30d"
+min_age = "7d"
+confirm = true         # download cache only; preserves npx and installations
+# cache_dir = "~/.npm" # otherwise uses `npm config get cache`
+
+[adapters.homebrew]
+max_age = "30d"
+min_age = "7d"
+confirm = true         # completed download archives only, never installed packages
+# cache_dir = "~/Library/Caches/Homebrew" # otherwise uses `brew --cache`
+
 [adapters.git-ignored]
 roots   = ["~/dev"]     # remove git-ignored objects (build dirs, logs, …)
 max_age = "30d"

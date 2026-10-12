@@ -32,6 +32,7 @@ use crate::{
 struct FakeNode {
     kind: NodeKind,
     modified: SystemTime,
+    accessed: Option<SystemTime>,
 }
 
 /// The variants a fake node can take.
@@ -74,6 +75,7 @@ enum CommandRule {
 #[derive(Debug)]
 struct FakeState {
     home: PathBuf,
+    env: BTreeMap<String, String>,
     /// Explicit cache-dir override; when `None`, derived from `home`.
     cache_dir: Option<PathBuf>,
     /// Explicit trash-dir override; when `None`, derived from `home`.
@@ -148,6 +150,7 @@ impl FakeState {
             self.nodes.entry(anc).or_insert(FakeNode {
                 kind: NodeKind::Dir,
                 modified,
+                accessed: Some(modified),
             });
         }
     }
@@ -277,6 +280,7 @@ impl FakePlatform {
         FakePlatform {
             state: Mutex::new(FakeState {
                 home: PathBuf::from("/home/tester"),
+                env: BTreeMap::new(),
                 cache_dir: None,
                 trash_dirs: None,
                 now,
@@ -310,6 +314,13 @@ impl FakePlatform {
         self
     }
 
+    /// Set a fake environment variable.
+    #[must_use]
+    pub fn with_env(self, name: &str, value: &str) -> Self {
+        self.lock().env.insert(name.into(), value.into());
+        self
+    }
+
     /// Register `path` (and its subtree) as a separate filesystem, so that
     /// [`Platform::metadata`] reports a distinct `dev` for it — modelling a mount
     /// point nested under a scanned root. Also creates the mount-point directory.
@@ -327,6 +338,7 @@ impl FakePlatform {
                 FakeNode {
                     kind: NodeKind::Dir,
                     modified: now,
+                    accessed: Some(now),
                 },
             );
         }
@@ -397,6 +409,7 @@ impl FakePlatform {
                         contents: contents.into(),
                     },
                     modified,
+                    accessed: Some(modified),
                 },
             );
         }
@@ -415,6 +428,7 @@ impl FakePlatform {
                 FakeNode {
                     kind: NodeKind::Dir,
                     modified,
+                    accessed: Some(modified),
                 },
             );
         }
@@ -434,6 +448,7 @@ impl FakePlatform {
                 FakeNode {
                     kind: NodeKind::SizedDir { size },
                     modified,
+                    accessed: Some(modified),
                 },
             );
         }
@@ -458,6 +473,7 @@ impl FakePlatform {
                 FakeNode {
                     kind: NodeKind::Symlink { target },
                     modified,
+                    accessed: Some(modified),
                 },
             );
         }
@@ -528,6 +544,13 @@ impl FakePlatform {
         st.total = total;
     }
 
+    /// Set a node's access timestamp without touching its modification time.
+    pub fn set_accessed(&self, path: impl AsRef<Path>, accessed: Option<SystemTime>) {
+        let mut st = self.lock();
+        let path = normalize(path.as_ref(), &st.home);
+        st.nodes.get_mut(&path).expect("fake node exists").accessed = accessed;
+    }
+
     // ── recorders / assertions ──────────────────────────────────────────
 
     /// Paths removed via [`Platform::remove_file`] / [`Platform::remove_dir_all`],
@@ -569,6 +592,14 @@ impl Platform for FakePlatform {
         self.lock().home.clone()
     }
 
+    fn env_var(&self, name: &str) -> Option<String> {
+        self.lock()
+            .env
+            .get(name)
+            .filter(|value| !value.is_empty())
+            .cloned()
+    }
+
     fn trash_dirs(&self) -> Vec<PathBuf> {
         self.lock().effective_trash()
     }
@@ -585,6 +616,7 @@ impl Platform for FakePlatform {
                 kind: node_file_kind(&node.kind),
                 len: node_len(&node.kind),
                 modified: node.modified,
+                accessed: node.accessed,
                 dev: st.dev_of(&p),
             }),
             None => Err(not_found(&p)),

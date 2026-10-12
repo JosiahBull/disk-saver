@@ -63,6 +63,10 @@ impl Platform for LinuxPlatform {
         sys::home_dir()
     }
 
+    fn env_var(&self, name: &str) -> Option<String> {
+        std::env::var(name).ok().filter(|value| !value.is_empty())
+    }
+
     fn trash_dirs(&self) -> Vec<PathBuf> {
         // XDG: $XDG_DATA_HOME/Trash, else ~/.local/share/Trash.
         let base = xdg_dir("XDG_DATA_HOME", || {

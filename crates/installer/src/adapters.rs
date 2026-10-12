@@ -58,6 +58,26 @@ pub const ADAPTERS: &[AdapterInfo] = &[
         takes_roots: false,
     },
     AdapterInfo {
+        name: "nvm",
+        desc: "nvm downloads and idle Node versions — asks first",
+        takes_roots: true,
+    },
+    AdapterInfo {
+        name: "uv",
+        desc: "unused uv cache entries — asks first",
+        takes_roots: false,
+    },
+    AdapterInfo {
+        name: "npm",
+        desc: "npm download cache — asks first",
+        takes_roots: false,
+    },
+    AdapterInfo {
+        name: "homebrew",
+        desc: "completed Homebrew downloads — asks first",
+        takes_roots: false,
+    },
+    AdapterInfo {
         name: "git-ignored",
         desc: "git-ignored objects — asks first",
         takes_roots: true,

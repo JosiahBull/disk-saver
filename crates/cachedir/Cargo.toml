@@ -13,6 +13,7 @@ disk-saver-platform.workspace = true
 serde.workspace = true
 tracing.workspace = true
 humantime-serde.workspace = true
+humantime.workspace = true
 
 [dev-dependencies]
 disk-saver-platform = { workspace = true, features = ["test-util"] }

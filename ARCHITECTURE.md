@@ -153,6 +153,10 @@ crates/
   adapter-pip/             package: disk-saver-adapter-pip             (on cachedir)
   adapter-git-gc/          package: disk-saver-adapter-git-gc          (on scan)
   adapter-git-ignored/     package: disk-saver-adapter-git-ignored     (on scan)
+  adapter-nvm/             package: disk-saver-adapter-nvm             (downloads + installations)
+  adapter-uv/              package: disk-saver-adapter-uv              (native cache maintenance)
+  adapter-npm/             package: disk-saver-adapter-npm             (native cache maintenance)
+  adapter-homebrew/        package: disk-saver-adapter-homebrew        (completed downloads)
 ```
 
 Two of those are shaped unlike the rest. `cachedir` is a second shared engine alongside
@@ -194,7 +198,7 @@ The CLI exposes one cargo feature per adapter (all on by default), plus `decisio
 default = [
     "docker", "node-modules", "rust-target", "python-cache", "trash",
     "pnpm", "cargo-registry", "pip", "git-gc", "git-ignored",
-    "decision-log",
+    "nvm", "uv", "npm", "homebrew", "decision-log",
 ]
 docker       = ["dep:disk-saver-adapter-docker"]
 decision-log = ["disk-saver-core/decision-log"]
@@ -425,7 +429,7 @@ pub trait Platform: Send + Sync {
     fn user_cache_dir(&self) -> PathBuf;
 
     // ── filesystem (never follows symlinks) ──
-    fn metadata(&self, path: &Path) -> io::Result<FileMeta>;       // kind, len, mtime
+    fn metadata(&self, path: &Path) -> io::Result<FileMeta>;       // kind, len, mtime, optional atime
     fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>>;
     fn read_to_string(&self, path: &Path) -> io::Result<String>;
     /// Recursive apparent size; stays on one device, doesn't follow symlinks.
@@ -879,7 +883,7 @@ don't want `disk-saver`'s own scanning to matter either — it never writes into
 |---|---|---|---|---|
 | `node-modules` | `node_modules/` | Cache | sibling `package.json` | doesn't descend into nested node_modules; pnpm symlink layouts safe (no-follow) |
 | `rust-target` | `target/`; under scavenge also `target/**/incremental` inside a `target/` too young to delete | Rebuildable | sibling `Cargo.toml` **and** `CACHEDIR.TAG` inside; an incremental cache is validated through the `target/` enclosing it | prior art: cargo-sweep (per-file granularity is a possible future refinement) |
-| `python-cache` | `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.tox/`; `.venv/` only if `include_venvs = true` | Rebuildable | dir-specific (e.g. `__pycache__` must contain only `*.pyc*`) | global pip/uv caches: future |
+| `python-cache` | `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.tox/`; `.venv/` only if `include_venvs = true` | Rebuildable | dir-specific (e.g. `__pycache__` must contain only `*.pyc*`) | global pip/uv caches: dedicated adapters |
 | shared config | `roots` (required-ish; default `["~"]` with a built-in denylist: `~/Library`, `~/.Trash`, cache dirs), `exclude` globs, `RetentionPolicy`, `max_depth = 8`, `confirm = false` | | | |
 
 These adapters need no KV state (age derives from the filesystem), but get a bucket
@@ -965,6 +969,40 @@ a great deal to learn the same thing. And **`min_age` is 6h** against the build-
 adapters' 1h (§12.2–12.4), because refilling one of these means re-downloading from a
 registry — a cache touched earlier today is worth strictly more than a `target/` of the same
 size, which rebuilds from sources already on disk.
+
+### Native cache maintenance and nvm retirement
+
+The four newer adapters share metadata-only activity and path validation in `cachedir`.
+`FileMeta::accessed` exposes the filesystem access timestamp without reading file contents.
+Recursive cache activity takes the newest file access/modification time; directory access
+is excluded because listing a directory updates it. Unreadable trees, nested mounts, and
+scan limits prevent cleanup. Every path component is checked for symlinks.
+
+`uv` discovers its root with `uv cache dir` and delegates to `uv cache prune --cache-dir`.
+`npm` discovers its root with `npm config get cache` and delegates `_cacache` cleanup to
+`npm --cache <root> cache clean --force`. Both recheck activity before execution and report
+an observed size reduction, rather than treating the full candidate size as reclaimed.
+uv's plan labels its size as an upper bound. Neither has a filesystem deletion fallback.
+
+`homebrew` queries `brew --cache` and scans only `downloads`. Candidates are completed
+SHA-256-prefixed archive files, each aged independently. The adapter does not invoke broad
+`brew cleanup`, which could remove installed package versions. `nvm` similarly scans
+completed archives under its `.cache/bin` and `.cache/src` trees. Both recheck timestamps,
+size, device, path, and open-file status (`lsof`) before unlinking an archive.
+
+nvm sources `nvm.sh --no-use` in a non-interactive shell without startup files. Tool paths
+and version specifications are positional arguments, never interpolated shell code.
+`NVM_DIR`, a configured `nvm_dir`, and the default `~/.nvm` determine its root. Installed
+versions are always confirmation-required `UserData`, including global packages. The
+adapter protects the current/default versions, named aliases, explicit specifications,
+`.nvmrc`/`.node-version` pins under configured roots, and open executables. Pin scans are
+bounded; an incomplete or unsafe scan prevents retirement. Other project roots are not
+claimed to be protected. Executable access evidence is displayed in the approval label.
+Approval repeats protection and activity checks, then uses `nvm uninstall`.
+
+All four ask for approval by default. Cache adapters use 30d/7d age defaults; nvm uses
+90d/30d. Unknown executable access times prevent Node retirement. Age is evidence for
+review, not proof that an installation is unused.
 
 ### 12.7 `git-gc` — repacking idle repositories
 

@@ -74,6 +74,56 @@ confirm = true                 # queue for `disk-saver review` instead of auto-d
 Every `[adapters.<name>]` table takes `enabled = false` to turn an adapter off. Thresholds
 accept absolute sizes (`"40GB"`) or percentages (`"10%"`); durations use `"7d"`/`"36h"` syntax.
 
+## Developer tool caches and Node versions
+
+The `nvm`, `uv`, `npm`, and `homebrew` adapters ask for approval by default:
+
+| Adapter | Cleanup scope |
+|---|---|
+| `nvm` | Completed binary/source downloads and inactive Node installations. Installed versions always require approval, including their global packages. |
+| `uv` | Unused entries through `uv cache prune`, using uv's cache locks. Installed Python runtimes and tools are outside its scope. |
+| `npm` | The `_cacache` download cache through npm. Keeps npx environments, logs, configuration, and installed packages. |
+| `homebrew` | Completed, SHA-256-prefixed download archives. Keeps installed formulae/casks, partial downloads, and open files. |
+
+Approval details include recorded access/activity timestamps. These are filesystem proxies;
+reading a file can update its access time, so they are not execution history. Cleanup rechecks
+paths and activity before acting and skips candidates accessed or changed since planning.
+
+```toml
+[adapters.nvm]
+roots = ["~/work", "~/personal"] # check .nvmrc and .node-version pins here
+max_age = "90d"
+min_age = "30d"
+include_versions = true
+confirm = true                  # applies to archives; versions always ask
+protect = ["v24.18.1"]           # additional version or alias specifications
+# nvm_dir = "~/.nvm"             # otherwise NVM_DIR, then ~/.nvm
+
+[adapters.uv]
+confirm = true
+# cache_dir = "~/.cache/uv"       # otherwise queried from uv
+
+[adapters.npm]
+confirm = true
+# cache_dir = "~/.npm"            # otherwise queried from npm
+
+[adapters.homebrew]
+confirm = true
+# cache_dir = "~/Library/Caches/Homebrew" # otherwise queried from brew
+```
+
+nvm protects the current and default versions, named aliases, configured `protect` entries,
+project pins under `roots`, and installations with an open Node executable. Pins outside those
+roots are not checked. Set `include_versions = false` to clean only downloaded archives.
+An unavailable `lsof` check prevents archive deletion and Node retirement.
+
+The cache adapters default to `max_age = "30d"` and `min_age = "7d"`; nvm defaults to 90d/30d.
+uv's candidate size is the cache footprint, an upper bound on what native pruning can reclaim.
+Reported freed bytes use the observed size decrease after maintenance.
+
+Preview with `disk-saver plan --adapter nvm --adapter uv --adapter npm --adapter homebrew --pressure scavenge --detailed`.
+Planning does not run cleanup commands or add items to the approval queue.
+
 ## Development
 
 ```sh

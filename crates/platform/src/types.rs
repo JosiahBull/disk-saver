@@ -30,6 +30,9 @@ pub struct FileMeta {
     pub len: u64,
     /// Last-modification time.
     pub modified: SystemTime,
+    /// Last recorded access time, when the filesystem provides it.
+    /// This is not proof of execution.
+    pub accessed: Option<SystemTime>,
     /// The id of the device (filesystem) this node lives on (`st_dev`). Used to
     /// keep walks and recursive deletion from crossing filesystem boundaries
     /// (ARCHITECTURE.md §11.8) — a mounted volume under a scanned root must not

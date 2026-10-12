@@ -179,7 +179,7 @@ registry, so leaves go first.
 #   disk-saver-kv, disk-saver-platform      (no internal dependencies)
 #   disk-saver-core                         (kv, platform)
 #   disk-saver-scan, disk-saver-cachedir
-#   disk-saver-adapter-*                    (all ten)
+#   disk-saver-adapter-*                    (all fourteen)
 #   disk-saver, disk-saver-installer        (last)
 cargo publish -p disk-saver-kv
 cargo publish -p disk-saver-platform

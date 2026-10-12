@@ -70,6 +70,7 @@ pub(crate) fn metadata(path: &Path) -> io::Result<FileMeta> {
         kind: kind_from_file_type(md.file_type()),
         len: md.len(),
         modified: md.modified()?,
+        accessed: md.accessed().ok(),
         dev: md.dev(),
     })
 }

@@ -16,6 +16,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod downloads;
+pub mod native;
+pub mod safety;
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 

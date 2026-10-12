@@ -36,7 +36,7 @@ run() {
 }
 
 # Every adapter, so the list below stays in step with crates/cli/Cargo.toml's `default`.
-ALL_ADAPTERS="docker,node-modules,rust-target,python-cache,pnpm,cargo-registry,pip,git-gc,git-ignored,trash"
+ALL_ADAPTERS="docker,node-modules,rust-target,python-cache,pnpm,cargo-registry,pip,git-gc,git-ignored,trash,nvm,uv,npm,homebrew"
 
 # Leanest possible build: no adapters, no decision-log.
 run cargo build --workspace --no-default-features --locked
