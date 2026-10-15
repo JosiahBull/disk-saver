@@ -14,7 +14,8 @@
 //! * A [`KEEP_SENTINEL`] (`.disk-saver-keep`) file in a directory exempts that
 //!   whole subtree — nothing under it is matched or descended.
 //! * Dot-directories (names starting with `.`) are never descended, but
-//!   `<project>/.git/HEAD` is still read to inform `last_active`.
+//!   `<project>/.git/HEAD` and its reflog are still read to inform
+//!   `last_active`.
 //! * A matched artifact directory is never descended into (so a nested
 //!   `node_modules` inside a `node_modules` is never reported).
 //! * Symlinks are never followed — only real directories are descended, and a
@@ -103,9 +104,10 @@ impl Default for ScanOptions {
 /// Walk every root and return one [`Found`] per matched artifact directory.
 ///
 /// Honors all guardrails documented on the [crate root](crate): the
-/// `.disk-saver-keep` sentinel, dot-directory skipping (with `.git/HEAD` still
-/// read for activity), never descending into a matched artifact directory,
-/// never following symlinks, `max_depth`, and the `exclude` glob set.
+/// `.disk-saver-keep` sentinel, dot-directory skipping (with `.git/HEAD` and
+/// the reflog still read for activity), never descending into a matched
+/// artifact directory, never following symlinks, `max_depth`, and the
+/// `exclude` glob set.
 ///
 /// The project activity time reported on each [`Found`] is:
 ///
@@ -114,7 +116,8 @@ impl Default for ScanOptions {
 ///     max( mtime of each entry directly in project_root, EXCLUDING any
 ///          artifact directory (a child whose name matches a rule) and the
 ///          `.git` directory,
-///          mtime of project_root/.git/HEAD if present )
+///          mtime of project_root/.git/HEAD if present,
+///          newest entry time in project_root/.git/logs/HEAD if present )
 /// ```
 ///
 /// The artifact directory's own mtime is deliberately ignored (a build touches
@@ -261,9 +264,10 @@ impl Walk<'_> {
     /// This is the newest mtime of anything the developer plausibly touched:
     /// every file and directory in the project tree (bounded by `max_depth`,
     /// excluding artifact dirs, `.git`, and dot-directories, staying on the
-    /// root's device), plus git activity via `.git/HEAD` (moves on
-    /// checkout/switch) and `.git/logs/HEAD` (the reflog — appended on every
-    /// commit/reset/fetch, including same-branch commits). Scanning the whole
+    /// root's device), plus git activity via `.git/HEAD`'s mtime (moves on
+    /// checkout/switch) and the newest entry in `.git/logs/HEAD` (the reflog —
+    /// appended on every commit/reset/merge, including same-branch commits; its
+    /// mtime is ignored because `git gc` rewrites it). Scanning the whole
     /// tree, not just the project root's direct children, is what makes editing a
     /// *nested* source file — the common case — refresh the signal.
     fn last_active(&self, project_root: &Path, entries: &[DirEntry]) -> SystemTime {
@@ -273,15 +277,29 @@ impl Walk<'_> {
         self.scan_activity_entries(entries, self.opts.max_depth, &mut newest);
 
         // Git activity signals.
-        for rel in [["HEAD"].as_slice(), ["logs", "HEAD"].as_slice()] {
-            let mut path = project_root.join(".git");
-            for comp in rel {
-                path = path.join(comp);
-            }
-            if let Ok(meta) = self.p.metadata(&path)
-                && meta.kind == FileKind::File
-            {
-                bump(&mut newest, meta.modified);
+        let git = project_root.join(".git");
+        if let Ok(meta) = self.p.metadata(&git.join("HEAD"))
+            && meta.kind == FileKind::File
+        {
+            bump(&mut newest, meta.modified);
+        }
+        // The reflog's mtime is not activity: `git gc` (including our own
+        // `git-gc` adapter) expires entries and rewrites the file even when
+        // nothing moved, so use the newest entry's recorded time instead.
+        let reflog = git.join("logs").join("HEAD");
+        if let Ok(meta) = self.p.metadata(&reflog)
+            && meta.kind == FileKind::File
+        {
+            match self.p.read_to_string(&reflog) {
+                // Every entry expired: no activity in the expiry window.
+                Ok(text) if text.trim().is_empty() => {}
+                Ok(text) => bump(
+                    &mut newest,
+                    newest_reflog_entry(&text).unwrap_or(meta.modified),
+                ),
+                // Unreadable/unparseable falls back to the mtime: overstating
+                // activity only delays a deletion.
+                Err(_) => bump(&mut newest, meta.modified),
             }
         }
 
@@ -310,7 +328,7 @@ impl Walk<'_> {
     ) {
         for entry in entries {
             // Ignore artifact directories (builds touch them; their effect shows
-            // up via source files) and `.git` (handled via HEAD/logs/HEAD).
+            // up via source files) and `.git` (handled via HEAD and the reflog).
             if entry.file_name == ".git" || self.rule_names.contains(entry.file_name.as_str()) {
                 continue;
             }
@@ -330,6 +348,18 @@ impl Walk<'_> {
             }
         }
     }
+}
+
+/// The time recorded on the last parseable line of a reflog. Each line is
+/// `<old-oid> <new-oid> <name> <<email>> <unix-secs> <tz>[\t<message>]`, and
+/// git appends, so the last line is the newest entry.
+fn newest_reflog_entry(text: &str) -> Option<SystemTime> {
+    text.lines().rev().find_map(|line| {
+        let header = line.split('\t').next()?;
+        let (_, when) = header.rsplit_once('>')?;
+        let secs: u64 = when.split_whitespace().next()?.parse().ok()?;
+        UNIX_EPOCH.checked_add(Duration::from_secs(secs))
+    })
 }
 
 /// Update `newest` to `t` if `t` is later (or `newest` is unset).
@@ -594,16 +624,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn last_active_reflects_a_same_branch_commit_via_reflog() {
-        // HEAD is old (no branch switch), but `.git/logs/HEAD` (the reflog) moved
-        // — a commit on the current branch. last_active must reflect it.
+    /// One reflog line recording a HEAD move at `when`.
+    fn reflog_line(when: SystemTime, msg: &str) -> String {
+        let secs = when.duration_since(UNIX_EPOCH).unwrap().as_secs();
+        format!(
+            "{} {} A U Thor <a@example.com> {secs} +1300\t{msg}\n",
+            "0".repeat(40),
+            "1".repeat(40)
+        )
+    }
+
+    /// A project whose sources and `.git/HEAD` were last touched at day 10,
+    /// with `.git/logs/HEAD` holding `reflog` and last written at `mtime`.
+    fn project_with_reflog(reflog: impl Into<Vec<u8>>, mtime: SystemTime) -> SystemTime {
         let fake = FakePlatform::new()
             .with_file("~/dev/app/package.json", "{}", t(10))
             .with_sized_dir("~/dev/app/node_modules", 1_200, t(10))
             .with_file("~/dev/app/.git/HEAD", "ref: refs/heads/main", t(10))
-            .with_file("~/dev/app/.git/logs/HEAD", "commit ...", t(90));
-
+            .with_file("~/dev/app/.git/logs/HEAD", reflog, mtime);
         let found = find_artifacts(
             &fake,
             &[PathBuf::from("~/dev")],
@@ -611,11 +649,58 @@ mod tests {
             &ScanOptions::default(),
         );
         assert_eq!(found.len(), 1);
+        found[0].last_active
+    }
+
+    #[test]
+    fn last_active_reflects_a_same_branch_commit_via_reflog() {
+        // HEAD is old (no branch switch), but the reflog gained an entry — a
+        // commit on the current branch. last_active must reflect it.
+        let reflog = reflog_line(t(5), "clone") + &reflog_line(t(90), "commit: fix");
         assert_eq!(
-            found[0].last_active,
+            project_with_reflog(reflog, t(90)),
             t(90),
             "same-branch commit must refresh activity"
         );
+    }
+
+    #[test]
+    fn last_active_ignores_a_reflog_rewritten_by_gc() {
+        // `git gc` rewrote the reflog at day 300 without adding an entry; the
+        // newest entry (day 50) is the real activity, not the rewrite.
+        let reflog = reflog_line(t(5), "clone") + &reflog_line(t(50), "commit: fix");
+        assert_eq!(project_with_reflog(reflog, t(300)), t(50));
+    }
+
+    #[test]
+    fn last_active_ignores_a_reflog_emptied_by_expiry() {
+        // gc expired every entry, leaving an empty file with a fresh mtime.
+        assert_eq!(project_with_reflog("", t(300)), t(10));
+    }
+
+    #[test]
+    fn last_active_falls_back_to_reflog_mtime_when_unparseable() {
+        // Content we can't read a time from is treated as activity at its mtime,
+        // the conservative direction (it only delays a deletion).
+        assert_eq!(project_with_reflog("garbage\n", t(90)), t(90));
+        assert_eq!(project_with_reflog(vec![0xff, 0xfe], t(90)), t(90));
+    }
+
+    #[test]
+    fn newest_reflog_entry_parses_git_lines() {
+        let at = |secs| Some(UNIX_EPOCH + Duration::from_secs(secs));
+        let oids = format!("{} {}", "a".repeat(40), "b".repeat(40));
+        // Last line wins; a name with spaces and a message with `>` are fine.
+        let text = format!(
+            "{oids} Jo Q Public <jo@x> 100 +0000\tcommit: a > b\n\
+             {oids} Jo Q Public <jo@x> 200 -0700\tcheckout: moving from x to y\n"
+        );
+        assert_eq!(newest_reflog_entry(&text), at(200));
+        // No message (git omits the tab), CRLF, and a corrupt trailing line.
+        let text = format!("{oids} J <j@x> 300 +0000\r\nnot a reflog line\n");
+        assert_eq!(newest_reflog_entry(&text), at(300));
+        assert_eq!(newest_reflog_entry("junk\n"), None);
+        assert_eq!(newest_reflog_entry(""), None);
     }
 
     #[test]
