@@ -19,6 +19,7 @@ fn cmd(home: &Path, config: &Path) -> Command {
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_CACHE_HOME")
         .env_remove("XDG_DATA_HOME")
+        .env_remove("CODEX_HOME")
         .env_remove("RUST_LOG");
     cmd
 }
@@ -161,6 +162,71 @@ fn plan_detailed_lists_the_project_path_per_candidate() {
 
     // Still a dry run — nothing deleted.
     assert!(target.join("CACHEDIR.TAG").exists());
+}
+
+#[test]
+fn plan_reports_agent_worktrees_and_never_removes_them() {
+    let home = TempDir::new().unwrap();
+    let repo = home.path().join("dev").join("repo");
+    let admin = repo.join(".git").join("worktrees").join("agent-1");
+    std::fs::create_dir_all(&admin).unwrap();
+    std::fs::write(admin.join("HEAD"), "ref: refs/heads/fix/x\n").unwrap();
+
+    // A Claude Code worktree with build output in it, and a Codex checkout.
+    let claude = repo.join(".claude").join("worktrees").join("agent-1");
+    std::fs::create_dir_all(claude.join("target")).unwrap();
+    std::fs::write(
+        claude.join(".git"),
+        format!("gitdir: {}\n", admin.display()),
+    )
+    .unwrap();
+    std::fs::write(claude.join("target").join("big"), vec![0u8; 64 * 1024]).unwrap();
+    let codex = home.path().join(".codex/worktrees/445f/repo");
+    std::fs::create_dir_all(&codex).unwrap();
+    std::fs::write(codex.join("README"), "x").unwrap();
+
+    let state = home.path().join("state");
+    let config = home.path().join("config.toml");
+    let toml = format!(
+        "[global]\nstate_dir = \"{state}\"\n\n\
+         [adapters.claude-worktrees]\nroots = [\"{roots}\"]\n",
+        state = state.display(),
+        roots = home.path().join("dev").display(),
+    );
+    std::fs::write(&config, toml).unwrap();
+
+    let only = [
+        "--adapter",
+        "claude-worktrees",
+        "--adapter",
+        "codex-worktrees",
+    ];
+    // Scavenge is the pressure most willing to delete; still nothing is planned.
+    cmd(home.path(), &config)
+        .args(["plan", "--pressure", "scavenge", "--detailed"])
+        .args(only)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reported only, never cleaned"))
+        .stdout(predicate::str::contains(format!(
+            "{} [fix/x]",
+            claude.display()
+        )))
+        .stdout(predicate::str::contains(
+            codex.to_string_lossy().into_owned(),
+        ))
+        .stdout(predicate::str::contains("candidate(s)").not());
+
+    cmd(home.path(), &config)
+        .args(["plan", "--json", "--pressure", "scavenge"])
+        .args(only)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"footprint\": ["))
+        .stdout(predicate::str::contains("\"candidates\": 0"));
+
+    assert!(claude.join("target").join("big").exists());
+    assert!(codex.join("README").exists());
 }
 
 #[test]

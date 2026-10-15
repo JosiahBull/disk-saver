@@ -124,6 +124,32 @@ Reported freed bytes use the observed size decrease after maintenance.
 Preview with `disk-saver plan --adapter nvm --adapter uv --adapter npm --adapter homebrew --pressure scavenge --detailed`.
 Planning does not run cleanup commands or add items to the approval queue.
 
+## Coding-agent worktrees
+
+`claude-worktrees` and `codex-worktrees` measure the git worktrees that Claude Code and
+Codex check out, and never delete them. `disk-saver plan` lists their sizes in a separate
+*reported only* section; scheduled runs skip them.
+
+| Adapter | Measures |
+|---|---|
+| `claude-worktrees` | each directory under `<repo>/.claude/worktrees/`, for repositories under `roots` |
+| `codex-worktrees` | each checkout under `$CODEX_HOME/worktrees/` (default `~/.codex/worktrees`) |
+
+Both tools remove their own worktrees, and keep the ones they judge unsafe to remove: Claude
+Code keeps worktrees with changes or unpushed commits, and Codex keeps its newest
+`worktree-keep-count`. Build output inside a kept worktree is invisible to `rust-target` and
+`node-modules`, which skip dot-directories, so this is where it shows up.
+
+```toml
+[adapters.claude-worktrees]
+roots = ["~/work", "~/personal"]
+
+[adapters.codex-worktrees]
+# root = "~/.codex/worktrees"     # only if you moved it in Codex's settings
+```
+
+Preview with `disk-saver plan --adapter claude-worktrees --adapter codex-worktrees --detailed`.
+
 ## Development
 
 ```sh

@@ -3,7 +3,8 @@
 //!
 //! [`Engine::run`] performs the full cycle *except* the single-instance lock
 //! (the CLI owns that): throttle gate → measure → classify → observe (isolated)
-//! → (if comfortable) GC approvals & return → plan → route confirmations →
+//! → (dry runs only) report footprints → (if comfortable) GC approvals &
+//! return → plan → route confirmations →
 //! execute (Normal: each adapter's unflagged candidates; Scavenge: impact waves
 //! with real free-space re-measurement and early stop) → persist report &
 //! `last_full_run` → notify.
@@ -101,6 +102,21 @@ pub struct CandidateReport {
     pub requires_confirmation: bool,
 }
 
+/// A display-friendly projection of one [`Footprint`](crate::Footprint):
+/// space an adapter reported but will never reclaim (`plan` shows these
+/// separately).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FootprintReport {
+    /// Adapter-scoped id (usually an absolute path).
+    pub id: String,
+    /// Human-readable one-liner.
+    pub label: String,
+    /// Apparent size in bytes.
+    pub bytes: u64,
+    /// Age at report time (`now - last_used`), in seconds.
+    pub age_secs: u64,
+}
+
 /// Per-adapter summary for a run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdapterReport {
@@ -121,6 +137,10 @@ pub struct AdapterReport {
     /// reports (without this field) readable.
     #[serde(default)]
     pub candidates_detail: Vec<CandidateReport>,
+    /// Space the adapter reported but never reclaims ([`Adapter::report`]).
+    /// Only dry runs collect it, so it is never persisted.
+    #[serde(default)]
+    pub footprint: Vec<FootprintReport>,
     /// Items removed.
     pub removed: usize,
     /// Bytes removed (sum of `Removed` outcome estimates).
@@ -131,6 +151,15 @@ pub struct AdapterReport {
     pub queued: usize,
     /// Items whose removal failed.
     pub failed: usize,
+}
+
+impl AdapterReport {
+    /// Total bytes this adapter reported as seen-but-never-reclaimed.
+    pub fn footprint_bytes(&self) -> u64 {
+        self.footprint
+            .iter()
+            .fold(0u64, |acc, f| acc.saturating_add(f.bytes))
+    }
 }
 
 /// The report of one full run (also persisted to a KV ring buffer for `status`).
@@ -171,6 +200,13 @@ impl RunReport {
             .fold(0u64, |acc, a| acc.saturating_add(a.candidate_bytes))
     }
 
+    /// Total bytes reported as seen-but-never-reclaimed across all adapters.
+    pub fn footprint_bytes(&self) -> u64 {
+        self.adapters
+            .iter()
+            .fold(0u64, |acc, a| acc.saturating_add(a.footprint_bytes()))
+    }
+
     /// Whether any adapter ended in [`AdapterStatus::Failed`] (exit code 2).
     pub fn any_failed(&self) -> bool {
         self.adapters
@@ -209,6 +245,7 @@ impl AdapterRun {
                 candidates: 0,
                 candidate_bytes: 0,
                 candidates_detail: Vec::new(),
+                footprint: Vec::new(),
                 removed: 0,
                 bytes_removed: 0,
                 skipped: 0,
@@ -308,6 +345,31 @@ impl<'a> Engine<'a> {
         for run in runs.iter_mut() {
             if let Err(skip) = self.run_phase(run.idx, pressure, |a, ctx| a.observe(ctx)) {
                 run.report.status = skip.into();
+            }
+        }
+
+        // REPORT-ONLY footprints: dry runs only, at any pressure. They are for
+        // a human reading `plan`; a scheduled run would only pay to measure
+        // what it is never allowed to delete.
+        if opts.dry_run {
+            for run in runs.iter_mut() {
+                if !run.is_ok() {
+                    continue;
+                }
+                match self.run_phase(run.idx, pressure, |a, ctx| a.report(ctx)) {
+                    Ok(items) => {
+                        run.report.footprint = items
+                            .iter()
+                            .map(|f| FootprintReport {
+                                id: f.id.clone(),
+                                label: f.label.clone(),
+                                bytes: f.bytes,
+                                age_secs: f.age(now).as_secs(),
+                            })
+                            .collect();
+                    }
+                    Err(skip) => run.report.status = skip.into(),
+                }
             }
         }
 

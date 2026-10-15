@@ -555,6 +555,15 @@ protect = ["*env*"]     # never touch entries whose name matches these (e.g. .en
 max_age = "60d"
 min_age = "7d"
 confirm = true
+
+# Coding-agent worktrees: `disk-saver plan` shows their size, and nothing ever
+# cleans them. Claude Code and Codex remove their own; what they keep is theirs,
+# or yours, to decide on.
+[adapters.claude-worktrees]
+roots = ["~/dev"]       # repositories whose .claude/worktrees/ to measure
+
+[adapters.codex-worktrees]
+# root = "~/.codex/worktrees" # otherwise $CODEX_HOME/worktrees, then ~/.codex/worktrees
 "#;
 
 #[cfg(test)]

@@ -84,9 +84,55 @@ pub fn print_run_report(report: &RunReport, detailed: bool) {
             report.queued_items
         );
     }
+    print_footprint_summary(report);
 
     if detailed {
         print_candidate_detail(report);
+        print_footprint_detail(report);
+    }
+}
+
+/// Print one line per adapter that reported space it never reclaims. Kept
+/// apart from the reclaimable estimate so the two are never added together.
+fn print_footprint_summary(report: &RunReport) {
+    if report.adapters.iter().all(|a| a.footprint.is_empty()) {
+        return;
+    }
+    println!();
+    println!("reported only, never cleaned:");
+    for a in report.adapters.iter().filter(|a| !a.footprint.is_empty()) {
+        println!(
+            "  {:<16} {:>4} item(s) {:>10}",
+            truncate(&a.name, 16),
+            a.footprint.len(),
+            bytes(a.footprint_bytes()),
+        );
+    }
+}
+
+/// Print a per-adapter table of reported-only items (size, age, item), biggest
+/// first. Used by `plan --detailed`.
+fn print_footprint_detail(report: &RunReport) {
+    for a in report.adapters.iter().filter(|a| !a.footprint.is_empty()) {
+        let mut items: Vec<_> = a.footprint.iter().collect();
+        items.sort_by_key(|f| std::cmp::Reverse(f.bytes));
+
+        println!();
+        println!(
+            "── {} ({} item(s), {}, reported only) ──",
+            a.name,
+            items.len(),
+            bytes(a.footprint_bytes()),
+        );
+        println!("  {:>10} {:>6}  item", "size", "age");
+        for f in items {
+            println!(
+                "  {:>10} {:>6}  {}",
+                bytes(f.bytes),
+                human_age(f.age_secs),
+                f.label,
+            );
+        }
     }
 }
 

@@ -1,0 +1,21 @@
+[package]
+name = "disk-saver-adapter-claude-worktrees"
+description = "disk-saver adapter that reports the size of Claude Code's git worktrees without removing them."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+disk-saver-core.workspace = true
+disk-saver-scan.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+disk-saver-platform = { workspace = true, features = ["test-util"] }
+toml.workspace = true
+
+[lints]
+workspace = true

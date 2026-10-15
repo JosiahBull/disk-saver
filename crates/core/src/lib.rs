@@ -34,12 +34,13 @@ pub use decision::{Decision, DecisionKind, DecisionLog};
 #[cfg(feature = "decision-log")]
 pub use decision::{RecordedDecision, read_decisions};
 pub use engine::{
-    AdapterReport, AdapterStatus, CandidateReport, Engine, RunOptions, RunReport, classify_pressure,
+    AdapterReport, AdapterStatus, CandidateReport, Engine, FootprintReport, RunOptions, RunReport,
+    classify_pressure,
 };
 pub use error::{AdapterError, ConfigError, parse_adapter_config};
 pub use retention::RetentionPolicy;
 pub use throttle::run_due;
-pub use types::{Candidate, Class, Outcome, Pressure};
+pub use types::{Candidate, Class, Footprint, Outcome, Pressure};
 
 // ── platform re-exports (so adapters use `disk_saver_core::Platform`) ────────
 pub use disk_saver_platform::{

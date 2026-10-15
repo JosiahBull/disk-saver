@@ -236,6 +236,10 @@ pub trait Adapter: Send {
     /// outcomes are reported per candidate, not all-or-nothing. Called both by
     /// scheduled runs (unflagged candidates) and by `disk-saver review` (approved ones).
     fn execute(&mut self, ctx: &mut Ctx, batch: &[Candidate]) -> Result<Vec<Outcome>, AdapterError>;
+
+    /// Space this adapter can see but never reclaims, for `disk-saver plan` to show.
+    /// Dry runs only; nothing returned is planned, queued, or executed. Default: none.
+    fn report(&mut self, ctx: &mut Ctx) -> Result<Vec<Footprint>, AdapterError> { Ok(vec![]) }
 }
 
 /// Everything an adapter may touch. Note: no direct fs/process/clock access.
@@ -663,6 +667,8 @@ Rules:
        crossed below warn_below since last run? → "scavenge soon" notification (§15.3)
  6. OBSERVE   for each adapter, in order, isolated (see §10):
                  adapter.observe(ctx)
+    (--dry-run only) REPORT footprints at any pressure: adapter.report(ctx).
+                 Shown by `plan` apart from candidates; never routed or executed.
  7. If pressure == Comfortable → GC approvals queue (§9), write report, exit 0.
  8. PLAN      for each adapter: candidates += adapter.plan(ctx)
               (--dry-run stops here and pretty-prints the table)
@@ -824,8 +830,9 @@ For a tool whose job is deleting files unattended, paranoia is a feature:
 Ten of them ship, in four families: docker (§12.1) stands alone on KV-tracked usage; five
 walk `roots` on `disk-saver-scan` looking for a marker (§12.2–12.4, §12.7–12.8); three prune
 a global cache directory on `disk-saver-cachedir` (§12.6); and trash (§12.5) is its own
-cross-platform case. Numbering follows the order they were built, not the order the engine
-runs them — that is by impact class (§8).
+cross-platform case. Two more only report what they find and delete nothing (§12.9).
+Numbering follows the order they were built, not the order the engine runs them — that is
+by impact class (§8).
 
 Common shape: each crate exports `factory() -> AdapterFactory` built with
 `AdapterFactory::typed`, defines its own serde config struct (embedding `RetentionPolicy`),
@@ -1051,6 +1058,37 @@ database, uncommitted scratch work. So this adapter proposes and never disposes.
 again in `execute` immediately before removal — so an approval that has been sitting in the
 queue cannot delete a path that a config change has since protected. The second check is
 redundant by construction, which is the point.
+
+### 12.9 `claude-worktrees`, `codex-worktrees` — reported, never cleaned
+
+*The only adapters that never delete. They exist to make a blind spot visible.*
+
+Coding agents check out git worktrees in dot-directories: Claude Code under
+`<repo>/.claude/worktrees/<name>`, Codex under `$CODEX_HOME/worktrees/<id>/<repo>`. The
+`scan` walk never enters dot-directories, so a `target/` or `node_modules/` built inside one
+is invisible to every other adapter — measured on one machine, 12.5 GB of a 12.6 GB Claude
+worktree was build output.
+
+Both tools already remove their own worktrees, and keep exactly the ones that are unsafe to
+remove. Claude Code's sweep (`cleanupPeriodDays`) keeps any with changes or unpushed commits;
+Codex keeps its newest `worktree-keep-count`, snapshots changes into
+`refs/codex/snapshots/…` before removing the rest, and leaves the `<id>` directory so it can
+restore the checkout to the same path. What survives is the agent's call or the user's, so
+these adapters implement only `Adapter::report` (§4.1): `plan` lists each worktree's size,
+branch, lock state, and approximate age in a separate *reported only* section, and nothing
+reaches `plan`, the approvals queue, or `execute` (which skips anything it is handed).
+
+| | |
+|---|---|
+| `claude-worktrees` | `find_markers` over `roots` for a `.claude` directory beside `.git` with a `worktrees/` inside; each directory in it is one footprint. Config: `roots`, `exclude`, `max_depth` |
+| `codex-worktrees` | each directory two levels under the root; buckets Codex has emptied (holding only `.codex-worktree-name`) are passed over. Root: config `root`, else `$CODEX_HOME/worktrees`, else `~/.codex/worktrees`. A missing root ⇒ `Unavailable` |
+| Size | `Platform::dir_size` of the checkout (apparent bytes, one device) |
+| Age | newest of the checkout's own mtime, its top-level entries, and the gitdir's `HEAD` and `index` — read from the `.git` file without running git. Not the reflog: `git gc` rewrites every worktree's `logs/HEAD` when it expires entries |
+| Cost | dry runs only, so a scheduled run never walks a worktree it may not delete |
+
+Both rely on where the tools put worktrees, not on their internal markers (`CLAUDE_BASE`,
+`codex-thread.json`), which neither documents. Worktrees moved by Claude Desktop's
+"Worktree location" setting or a `WorktreeCreate` hook are not found.
 
 ---
 

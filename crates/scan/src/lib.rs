@@ -36,6 +36,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use disk_saver_platform::{DirEntry, FileKind, Platform};
 
+pub mod worktree;
+
 /// Filename that, when present in a directory, exempts that directory and its
 /// entire subtree from every filesystem adapter.
 pub const KEEP_SENTINEL: &str = ".disk-saver-keep";
@@ -127,12 +129,59 @@ pub fn find_artifacts(
     rules: &[Rule],
     opts: &ScanOptions,
 ) -> Vec<Found> {
+    walk(p, roots, rules, opts, true)
+}
+
+/// One matched marker directory from [`find_markers`]: found, but neither
+/// sized nor dated.
+#[derive(Debug, Clone)]
+pub struct Marker {
+    /// The [`Rule::artifact_dir`] of the rule that matched.
+    pub rule: &'static str,
+    /// Absolute path of the matched directory.
+    pub dir: PathBuf,
+    /// Absolute path of the directory holding it (the project).
+    pub project_root: PathBuf,
+}
+
+/// Walk exactly as [`find_artifacts`] does, with the same guardrails, but skip
+/// sizing each match and dating its project.
+///
+/// For an adapter that measures something *inside* the match rather than the
+/// match itself — the worktrees under `.claude/worktrees`, say — both would be
+/// whole extra walks whose results it throws away.
+pub fn find_markers(
+    p: &dyn Platform,
+    roots: &[PathBuf],
+    rules: &[Rule],
+    opts: &ScanOptions,
+) -> Vec<Marker> {
+    walk(p, roots, rules, opts, false)
+        .into_iter()
+        .map(|f| Marker {
+            rule: f.rule,
+            dir: f.artifact_dir,
+            project_root: f.project_root,
+        })
+        .collect()
+}
+
+/// The shared body of [`find_artifacts`] and [`find_markers`]. With `measure`
+/// off, every [`Found`] carries a zero size and a `UNIX_EPOCH` activity time.
+fn walk(
+    p: &dyn Platform,
+    roots: &[PathBuf],
+    rules: &[Rule],
+    opts: &ScanOptions,
+    measure: bool,
+) -> Vec<Found> {
     let rule_names: HashSet<&str> = rules.iter().map(|r| r.artifact_dir).collect();
     let mut walk = Walk {
         p,
         rules,
         rule_names: &rule_names,
         opts,
+        measure,
         root_dev: None,
         out: Vec::new(),
     };
@@ -153,6 +202,8 @@ struct Walk<'a> {
     rules: &'a [Rule],
     rule_names: &'a HashSet<&'a str>,
     opts: &'a ScanOptions,
+    /// Whether to size each match and date its project (see [`walk`]).
+    measure: bool,
     /// Device id of the current root; the walk never descends onto a different
     /// filesystem. `None` disables the check (the root could not be stat'd).
     root_dev: Option<u64>,
@@ -213,9 +264,17 @@ impl Walk<'_> {
         }
 
         if !reportable.is_empty() {
-            let last_active = self.last_active(dir, &entries);
+            let last_active = if self.measure {
+                self.last_active(dir, &entries)
+            } else {
+                UNIX_EPOCH
+            };
             for (rule, artifact_dir) in reportable {
-                let size = self.p.dir_size(&artifact_dir).unwrap_or(0);
+                let size = if self.measure {
+                    self.p.dir_size(&artifact_dir).unwrap_or(0)
+                } else {
+                    0
+                };
                 self.out.push(Found {
                     rule: rule.artifact_dir,
                     artifact_dir,
@@ -921,6 +980,35 @@ mod tests {
             &ScanOptions::default(),
         );
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn find_markers_matches_without_sizing_or_dating() {
+        // A dot-named marker is matched at the project level even though the
+        // walk never descends into it, and an unmeasured walk reports where it
+        // is but never what it holds.
+        let rule = Rule {
+            artifact_dir: ".claude",
+            required_sibling: &[".git"],
+            validate: |_, _| true,
+        };
+        let fake = FakePlatform::new()
+            .with_file("~/dev/repo/.git/HEAD", "ref: refs/heads/main", t(10))
+            .with_sized_dir("~/dev/repo/.claude/worktrees", 9_000, t(10))
+            // No `.git` sibling: not a match.
+            .with_dir("~/dev/notrepo/.claude/worktrees", t(10));
+
+        let found = find_markers(
+            &fake,
+            &[PathBuf::from("~/dev")],
+            &[rule],
+            &ScanOptions::default(),
+        );
+        assert_eq!(found.len(), 1);
+        let home = fake.home_dir();
+        assert_eq!(found[0].rule, ".claude");
+        assert_eq!(found[0].dir, home.join("dev/repo/.claude"));
+        assert_eq!(found[0].project_root, home.join("dev/repo"));
     }
 
     #[test]

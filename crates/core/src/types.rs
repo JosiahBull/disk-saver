@@ -81,6 +81,47 @@ impl Candidate {
     }
 }
 
+/// Space an adapter can see but never reclaims.
+///
+/// Returned by [`Adapter::report`](crate::Adapter::report) for things whose
+/// owner is another tool — a coding agent's worktrees, say — where the size is
+/// worth knowing but deleting is not our decision. A footprint is shown by
+/// `disk-saver plan` and is never planned, queued, or executed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Footprint {
+    /// Adapter-scoped stable id (usually an absolute path).
+    pub id: String,
+    /// Human-readable one-liner for `plan` output.
+    pub label: String,
+    /// Apparent size in bytes.
+    pub bytes: u64,
+    /// When this item was last known to be used (informational only).
+    pub last_used: SystemTime,
+}
+
+impl Footprint {
+    /// Build a footprint.
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        bytes: u64,
+        last_used: SystemTime,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            bytes,
+            last_used,
+        }
+    }
+
+    /// Age of the item at `now`, saturating to zero if `last_used` is in the
+    /// future.
+    pub fn age(&self, now: SystemTime) -> Duration {
+        now.duration_since(self.last_used).unwrap_or(Duration::ZERO)
+    }
+}
+
 /// The result of attempting to delete one candidate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Outcome {

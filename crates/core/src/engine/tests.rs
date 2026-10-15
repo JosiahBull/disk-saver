@@ -11,7 +11,8 @@ use disk_saver_platform::FakePlatform;
 
 use crate::{
     Adapter, AdapterError, AdapterStatus, Approvals, Candidate, Class, Config, Ctx, DecisionLog,
-    Engine, Outcome, Pressure, RunOptions, RunReport, Threshold, Urgency, classify_pressure,
+    Engine, Footprint, Outcome, Pressure, RunOptions, RunReport, Threshold, Urgency,
+    classify_pressure,
 };
 
 // ── test harness ────────────────────────────────────────────────────────────
@@ -44,6 +45,7 @@ enum Behavior {
     UnavailableObserve,
     PanicObserve,
     PanicPlan,
+    PanicReport,
     FailExecute,
 }
 
@@ -52,6 +54,7 @@ struct Stub {
     name: &'static str,
     log: Log,
     plan: Vec<Candidate>,
+    footprint: Vec<Footprint>,
     behavior: Behavior,
     /// If set, `execute` raises the shared platform's free space (early-stop test).
     raise_free: Option<(Arc<FakePlatform>, u64, u64)>,
@@ -63,6 +66,7 @@ impl Stub {
             name,
             log,
             plan: Vec::new(),
+            footprint: Vec::new(),
             behavior: Behavior::Ok,
             raise_free: None,
         }
@@ -70,6 +74,11 @@ impl Stub {
 
     fn with_plan(mut self, plan: Vec<Candidate>) -> Self {
         self.plan = plan;
+        self
+    }
+
+    fn with_footprint(mut self, footprint: Vec<Footprint>) -> Self {
+        self.footprint = footprint;
         self
     }
 
@@ -112,6 +121,14 @@ impl Adapter for Stub {
             panic!("plan boom");
         }
         Ok(self.plan.clone())
+    }
+
+    fn report(&mut self, _ctx: &mut Ctx) -> Result<Vec<Footprint>, AdapterError> {
+        self.push(format!("report:{}", self.name));
+        if let Behavior::PanicReport = self.behavior {
+            panic!("report boom");
+        }
+        Ok(self.footprint.clone())
     }
 
     fn execute(
@@ -921,6 +938,111 @@ fn dry_run_plans_but_does_not_execute_route_or_persist() {
     // last_full_run was not written → a subsequent real run is not throttled.
     let r2 = run(&fake, &cfg, &store, vec![], &RunOptions::default());
     assert!(!r2.throttled);
+}
+
+// ── report-only footprints ──────────────────────────────────────────────────
+
+fn print(id: &str, bytes: u64, age_days: u64) -> Footprint {
+    let last = fake_now() - Duration::from_secs(age_days * 24 * 3600);
+    Footprint::new(id, id, bytes, last)
+}
+
+fn dry() -> RunOptions {
+    RunOptions {
+        dry_run: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn dry_run_reports_footprints_even_when_comfortable() {
+    // Comfortable never plans, but a footprint is not a deletion: `plan` should
+    // still show what an agent's worktrees are holding.
+    let fake = FakePlatform::new().with_free_space(500, 1000);
+    let store = crate::Store::open_in_memory().unwrap();
+    let cfg = Config::defaults();
+    let log = new_log();
+    let adapters = vec![
+        Stub::new("agent", log.clone())
+            .with_footprint(vec![print("/wt/a", 70, 3), print("/wt/b", 30, 40)])
+            .boxed(),
+    ];
+    let report = run(&fake, &cfg, &store, adapters, &dry());
+
+    assert_eq!(report.pressure, "comfortable");
+    assert_eq!(events(&log), vec!["obs:agent", "report:agent"]);
+    let a = find(&report, "agent");
+    assert_eq!(a.footprint.len(), 2);
+    assert_eq!(a.footprint[0].id, "/wt/a");
+    assert_eq!(a.footprint[0].age_secs, 3 * 24 * 3600);
+    assert_eq!(a.candidates, 0);
+    assert_eq!(report.footprint_bytes(), 100);
+}
+
+#[test]
+fn footprints_are_never_planned_queued_or_executed() {
+    let fake = FakePlatform::new().with_free_space(50, 1000); // Scavenge
+    let store = crate::Store::open_in_memory().unwrap();
+    let cfg = Config::defaults();
+    let log = new_log();
+    let adapters = vec![
+        Stub::new("agent", log.clone())
+            .with_footprint(vec![print("/wt/a", 900, 400)])
+            .boxed(),
+    ];
+    let report = run(&fake, &cfg, &store, adapters, &dry());
+
+    let a = find(&report, "agent");
+    assert_eq!(a.footprint.len(), 1);
+    assert_eq!((a.candidates, a.queued, a.removed), (0, 0, 0));
+    assert_eq!(report.candidate_bytes(), 0);
+    assert!(!events(&log).iter().any(|e| e.starts_with("exec:")));
+    assert!(Approvals::open(&store).list().is_empty());
+}
+
+#[test]
+fn real_runs_never_ask_for_footprints() {
+    // Measuring what we may never delete is wasted IO on a scheduled run.
+    let fake = FakePlatform::new().with_free_space(50, 1000); // Scavenge
+    let store = crate::Store::open_in_memory().unwrap();
+    let cfg = Config::defaults();
+    let log = new_log();
+    let adapters = vec![
+        Stub::new("agent", log.clone())
+            .with_footprint(vec![print("/wt/a", 900, 400)])
+            .boxed(),
+    ];
+    let report = run(&fake, &cfg, &store, adapters, &forced());
+
+    assert!(!events(&log).iter().any(|e| e.starts_with("report:")));
+    assert!(find(&report, "agent").footprint.is_empty());
+    assert_eq!(report.footprint_bytes(), 0);
+}
+
+#[test]
+fn a_panicking_report_fails_only_that_adapter() {
+    let fake = FakePlatform::new().with_free_space(150, 1000); // Normal
+    let store = crate::Store::open_in_memory().unwrap();
+    let cfg = Config::defaults();
+    let log = new_log();
+    let adapters = vec![
+        Stub::new("bad", log.clone())
+            .behavior(Behavior::PanicReport)
+            .with_plan(vec![cand("b1", 10, Class::Cache, 100)])
+            .boxed(),
+        Stub::new("good", log.clone())
+            .with_footprint(vec![print("/wt/a", 5, 1)])
+            .boxed(),
+    ];
+    let report = run(&fake, &cfg, &store, adapters, &dry());
+
+    match &find(&report, "bad").status {
+        AdapterStatus::Failed(msg) => assert!(msg.contains("report boom"), "{msg}"),
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    // A failed adapter is not planned either.
+    assert!(!events(&log).contains(&"plan:bad".to_string()));
+    assert_eq!(find(&report, "good").footprint.len(), 1);
 }
 
 // ── run report / persistence / filters ──────────────────────────────────────

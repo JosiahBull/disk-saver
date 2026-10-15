@@ -20,7 +20,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use crate::decision::{Decision, DecisionLog};
 use crate::error::{AdapterError, ConfigError, parse_adapter_config};
 use crate::retention::RetentionPolicy;
-use crate::types::{Candidate, Outcome, Pressure};
+use crate::types::{Candidate, Footprint, Outcome, Pressure};
 
 /// Everything an adapter may touch during one run.
 pub struct Ctx<'run> {
@@ -90,6 +90,15 @@ pub trait Adapter: Send {
     /// normal: outcomes are per candidate, not all-or-nothing.
     fn execute(&mut self, ctx: &mut Ctx, batch: &[Candidate])
     -> Result<Vec<Outcome>, AdapterError>;
+
+    /// Space this adapter can see but will never reclaim, shown by
+    /// `disk-saver plan`. Runs on dry runs only, at any pressure, after
+    /// `observe`; nothing it returns is planned, queued, or executed.
+    /// Defaults to nothing.
+    fn report(&mut self, ctx: &mut Ctx) -> Result<Vec<Footprint>, AdapterError> {
+        let _ = ctx;
+        Ok(Vec::new())
+    }
 }
 
 /// The type-erased constructor inside an [`AdapterFactory`].

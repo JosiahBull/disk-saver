@@ -459,6 +459,8 @@ dependencies = [
  "bytesize",
  "clap",
  "disk-saver-adapter-cargo-registry",
+ "disk-saver-adapter-claude-worktrees",
+ "disk-saver-adapter-codex-worktrees",
  "disk-saver-adapter-docker",
  "disk-saver-adapter-git-gc",
  "disk-saver-adapter-git-ignored",
@@ -495,6 +497,29 @@ dependencies = [
  "disk-saver-core",
  "disk-saver-kv",
  "disk-saver-platform",
+]
+
+[[package]]
+name = "disk-saver-adapter-claude-worktrees"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "disk-saver-core",
+ "disk-saver-platform",
+ "disk-saver-scan",
+ "serde",
+ "toml",
+]
+
+[[package]]
+name = "disk-saver-adapter-codex-worktrees"
+version = "0.2.0"
+dependencies = [
+ "disk-saver-core",
+ "disk-saver-platform",
+ "disk-saver-scan",
+ "serde",
+ "toml",
 ]
 
 [[package]]

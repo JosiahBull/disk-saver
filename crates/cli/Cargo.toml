@@ -67,6 +67,8 @@ disk-saver-adapter-nvm = { workspace = true, optional = true }
 disk-saver-adapter-uv = { workspace = true, optional = true }
 disk-saver-adapter-npm = { workspace = true, optional = true }
 disk-saver-adapter-homebrew = { workspace = true, optional = true }
+disk-saver-adapter-claude-worktrees = { workspace = true, optional = true }
+disk-saver-adapter-codex-worktrees = { workspace = true, optional = true }
 
 clap.workspace = true
 anyhow.workspace = true
@@ -96,6 +98,8 @@ default = [
     "uv",
     "npm",
     "homebrew",
+    "claude-worktrees",
+    "codex-worktrees",
     "decision-log",
 ]
 docker = ["dep:disk-saver-adapter-docker"]
@@ -112,6 +116,8 @@ nvm = ["dep:disk-saver-adapter-nvm"]
 uv = ["dep:disk-saver-adapter-uv"]
 npm = ["dep:disk-saver-adapter-npm"]
 homebrew = ["dep:disk-saver-adapter-homebrew"]
+claude-worktrees = ["dep:disk-saver-adapter-claude-worktrees"]
+codex-worktrees = ["dep:disk-saver-adapter-codex-worktrees"]
 decision-log = ["disk-saver-core/decision-log"]
 
 [dev-dependencies]

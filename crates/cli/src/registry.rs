@@ -41,5 +41,9 @@ pub fn registry() -> Vec<AdapterFactory> {
         disk_saver_adapter_git_ignored::factory(),
         #[cfg(feature = "trash")]
         disk_saver_adapter_trash::factory(),
+        #[cfg(feature = "claude-worktrees")]
+        disk_saver_adapter_claude_worktrees::factory(),
+        #[cfg(feature = "codex-worktrees")]
+        disk_saver_adapter_codex_worktrees::factory(),
     ]
 }

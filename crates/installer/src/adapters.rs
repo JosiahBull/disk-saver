@@ -87,6 +87,16 @@ pub const ADAPTERS: &[AdapterInfo] = &[
         desc: "OS trash / recycle bin — asks first",
         takes_roots: false,
     },
+    AdapterInfo {
+        name: "claude-worktrees",
+        desc: "Claude Code worktrees — size shown, never cleaned",
+        takes_roots: true,
+    },
+    AdapterInfo {
+        name: "codex-worktrees",
+        desc: "Codex worktrees — size shown, never cleaned",
+        takes_roots: false,
+    },
 ];
 
 /// A free-space threshold preset.

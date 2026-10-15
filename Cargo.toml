@@ -40,6 +40,8 @@ disk-saver-adapter-nvm = { path = "crates/adapter-nvm", version = "0.2.0" }
 disk-saver-adapter-uv = { path = "crates/adapter-uv", version = "0.2.0" }
 disk-saver-adapter-npm = { path = "crates/adapter-npm", version = "0.2.0" }
 disk-saver-adapter-homebrew = { path = "crates/adapter-homebrew", version = "0.2.0" }
+disk-saver-adapter-claude-worktrees = { path = "crates/adapter-claude-worktrees", version = "0.2.0" }
+disk-saver-adapter-codex-worktrees = { path = "crates/adapter-codex-worktrees", version = "0.2.0" }
 
 # ── external ──
 anyhow = "1"
