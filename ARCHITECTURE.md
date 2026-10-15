@@ -874,8 +874,10 @@ pub fn find_artifacts(p: &dyn Platform, roots: &[PathBuf], rules: &[Rule], excl:
 
 **"Last used" heuristic** (the honest, documented compromise — atime is unreliable/noatime):
 `project_last_active = max(mtime of entries in the project root excluding artifact dirs,
-mtime of .git/HEAD if present)`. Editing any file, committing, or switching branches
-refreshes it. The artifact dir's own mtime is deliberately ignored (builds touch it, but
+mtime of .git/HEAD if present, newest entry time in .git/logs/HEAD if present)`. Editing
+any file, committing, or switching branches refreshes it. The reflog's own mtime is not
+used: `git gc` (including the `git-gc` adapter) expires reflog entries and rewrites the
+file even when HEAD never moved, which would make every repacked repo look freshly active. The artifact dir's own mtime is deliberately ignored (builds touch it, but
 a build *is* project activity, so its effect shows up via source files anyway; and we
 don't want `disk-saver`'s own scanning to matter either — it never writes into projects).
 
