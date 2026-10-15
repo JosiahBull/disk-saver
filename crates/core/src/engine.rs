@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::adapter::{Adapter, Ctx};
 use crate::approvals::Approvals;
+use crate::claims::Claims;
 use crate::config::{Config, GlobalConfig, NotificationEvent};
 use crate::decision::{Decision, DecisionKind, DecisionLog};
 use crate::error::AdapterError;
@@ -230,6 +231,8 @@ pub struct Engine<'a> {
     store: &'a Store,
     decisions: &'a DecisionLog,
     adapters: Vec<Box<dyn Adapter>>,
+    /// Paths claimed by adapters planned so far this run (see [`Claims`]).
+    claims: Claims,
 }
 
 impl<'a> Engine<'a> {
@@ -247,6 +250,7 @@ impl<'a> Engine<'a> {
             store,
             decisions,
             adapters,
+            claims: Claims::new(),
         }
     }
 
@@ -324,7 +328,9 @@ impl<'a> Engine<'a> {
             }
             queued_items = approvals.pending(now).len();
         } else {
-            // 8. PLAN (isolated) for still-Ok adapters.
+            // 8. PLAN (isolated) for still-Ok adapters, in registry order: each
+            // adapter sees the paths claimed by those planned before it.
+            self.claims = Claims::new();
             for run in runs.iter_mut() {
                 if !run.is_ok() {
                     continue;
@@ -461,18 +467,24 @@ impl<'a> Engine<'a> {
 
     // ── phase execution & isolation ─────────────────────────────────────
 
-    /// Build a [`Ctx`] for adapter `idx`, run `f` under `catch_unwind`, and map
-    /// its result / panic into a `Skip`.
+    /// Build a [`Ctx`] for adapter `idx`, run `f` under `catch_unwind`, record
+    /// the paths it claimed, and map its result / panic into a `Skip`.
     fn run_phase<R, F>(&mut self, idx: usize, pressure: Pressure, f: F) -> Result<R, Skip>
     where
         F: FnOnce(&mut dyn Adapter, &mut Ctx<'_>) -> Result<R, AdapterError>,
     {
         let name = self.adapters[idx].name();
         let bucket = self.store.bucket(name);
-        let mut ctx = Ctx::new(self.platform, bucket, pressure, self.decisions);
+        let mut ctx =
+            Ctx::new(self.platform, bucket, pressure, self.decisions).with_claims(&self.claims);
         let adapter: &mut dyn Adapter = &mut *self.adapters[idx];
         let caught =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(adapter, &mut ctx)));
+        let claimed = ctx.take_claimed();
+        drop(ctx);
+        for path in claimed {
+            self.claims.insert(path, name);
+        }
         match caught {
             Ok(Ok(r)) => Ok(r),
             Ok(Err(AdapterError::Unavailable(m))) => Err(Skip::Unavailable(m)),

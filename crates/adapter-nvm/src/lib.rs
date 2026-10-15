@@ -5,8 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use disk_saver_cachedir::{
-    downloads::{Downloads, archive_name},
-    native::NativeConfig,
+    downloads::{Downloads, DownloadsConfig, archive_name},
     safety::{access_label, real_path, record_plan, record_results},
 };
 use disk_saver_core::{
@@ -43,7 +42,7 @@ pub fn factory() -> AdapterFactory {
             name: "nvm",
             root: downloads,
             archive: archive_name,
-            cfg: NativeConfig {
+            cfg: DownloadsConfig {
                 max_age: cfg.max_age,
                 min_age: cfg.min_age,
                 confirm: cfg.confirm,

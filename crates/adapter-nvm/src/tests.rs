@@ -187,15 +187,20 @@ fn cache_and_versions_can_be_configured_independently() {
             t(200),
         )
         .with_command("lsof", &["-t", "--", path], no_open_files());
-    let cfg = toml::from_str("include_versions = false\nconfirm = false").unwrap();
+    // Archives are removed without asking by default.
+    let cfg = toml::from_str("include_versions = false").unwrap();
     run(&p, Some(cfg), |a, ctx| {
         let plan = a.plan(ctx).unwrap();
         assert_eq!(plan.len(), 2);
         assert!(plan.iter().all(|c| !c.requires_confirmation));
         assert!(plan.iter().all(|c| c.id.contains("/.cache/")));
     });
-    let cfg = toml::from_str("confirm = false").unwrap();
+    let cfg = toml::from_str("include_versions = false\nconfirm = true").unwrap();
     run(&p, Some(cfg), |a, ctx| {
+        assert!(a.plan(ctx).unwrap().iter().all(|c| c.requires_confirmation));
+    });
+    // An installed version always asks, whatever `confirm` says.
+    run(&p, None, |a, ctx| {
         let plan = a.plan(ctx).unwrap();
         assert!(
             plan.iter()

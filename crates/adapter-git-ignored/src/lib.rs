@@ -13,6 +13,15 @@
 //! candidates queue for `disk-saver review`. By default any entry whose name
 //! matches `*env*` (`.env`, `venv`, `env/`, …) is never proposed; adjust with the
 //! `protect` glob list. Requires `git` on `PATH` (else `Unavailable`).
+//!
+//! Two kinds of entry are never proposed, whatever the config says:
+//!
+//! * Anything another adapter claimed earlier in the run: a `node_modules`, a
+//!   cargo `target`, a `__pycache__`. That adapter ages it by project activity;
+//!   this one has only the entry's own mtime, which for a directory says little.
+//!   The registry plans this adapter after those, so their claims are in place.
+//! * Finder metadata (`.DS_Store`) and Claude Code's local state (`.claude`,
+//!   `CLAUDE.md`, `CLAUDE.local.md`), matched against every path component.
 
 #![forbid(unsafe_code)]
 
@@ -29,6 +38,16 @@ use serde::Deserialize;
 
 /// The adapter's stable name (config section, KV bucket, log target).
 const NAME: &str = "git-ignored";
+
+/// Names never proposed or removed, whatever `protect` says. Matched against
+/// every path component, so `.claude` also covers `.claude/worktrees` and
+/// `.claude/settings.local.json`.
+///
+/// * `.DS_Store`: Finder metadata. A few KB, recreated on the next visit, and not
+///   worth a review prompt.
+/// * `.claude`, `CLAUDE.md`, `CLAUDE.local.md`: Claude Code's local settings,
+///   memory and worktrees. A worktree can hold uncommitted work.
+const ALWAYS_SKIPPED: &[&str] = &[".DS_Store", ".claude", "CLAUDE.md", "CLAUDE.local.md"];
 
 /// A repo is any directory containing a `.git` directory.
 static GIT_RULE: &[Rule] = &[Rule {
@@ -159,12 +178,16 @@ fn ignored_objects(platform: &dyn Platform, repo: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// True if `path`'s final component matches a `protect` glob.
+/// True if `path` must never be proposed or removed: any component is an
+/// [`ALWAYS_SKIPPED`] name, or its final component matches a `protect` glob.
 fn is_protected(protect: &GlobSet, path: &Path) -> bool {
-    match path.file_name() {
-        Some(name) => protect.is_match(Path::new(name)),
-        None => false,
-    }
+    let always = path
+        .components()
+        .any(|c| ALWAYS_SKIPPED.iter().any(|name| c.as_os_str() == *name));
+    always
+        || path
+            .file_name()
+            .is_some_and(|name| protect.is_match(Path::new(name)))
 }
 
 impl Adapter for GitIgnoredAdapter {
@@ -192,7 +215,16 @@ impl Adapter for GitIgnoredAdapter {
             let repo = found.project_root;
             for path in ignored_objects(ctx.platform, &repo) {
                 if is_protected(&self.protect, &path) {
-                    continue; // e.g. anything matching *env*
+                    continue; // e.g. anything matching *env*, or under .claude
+                }
+                if let Some(owner) = ctx.claims.owner(&path) {
+                    if DecisionLog::compiled() {
+                        ctx.decide(
+                            Decision::new(DecisionKind::Kept, NAME, path.to_string_lossy())
+                                .reason(format!("claimed by {owner}")),
+                        );
+                    }
+                    continue;
                 }
                 let meta = match ctx.platform.metadata(&path) {
                     Ok(m) => m,
@@ -244,7 +276,7 @@ impl Adapter for GitIgnoredAdapter {
             let outcome = if is_protected(&self.protect, &path) {
                 Outcome::Skipped {
                     id: c.id.clone(),
-                    reason: "protected by a `protect` glob".to_string(),
+                    reason: "protected by a `protect` glob or a built-in rule".to_string(),
                 }
             } else {
                 match ctx.platform.metadata(&path) {

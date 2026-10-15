@@ -623,3 +623,20 @@ fn execute_refuses_an_incremental_outside_a_cargo_target() {
     assert!(fake.removed().is_empty());
     assert!(fake.exists("~/dev/proj/incremental"));
 }
+
+// ── claims ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn claims_targets_it_keeps_as_well_as_those_it_plans() {
+    // 20 days idle < 30d max_age: kept, but still this adapter's to judge.
+    let fake = fake_project(day(380));
+    let mut adapter = adapter_from(dev_root_toml());
+    let store = Store::open_in_memory().unwrap();
+    let log = DecisionLog::disabled();
+    let mut ctx = Ctx::new(&fake, store.bucket(adapter.name()), Pressure::Normal, &log);
+    assert!(adapter.plan(&mut ctx).unwrap().is_empty());
+    assert_eq!(
+        ctx.take_claimed(),
+        [PathBuf::from("/home/tester/dev/proj/target")]
+    );
+}

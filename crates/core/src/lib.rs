@@ -13,6 +13,7 @@
 
 pub mod adapter;
 pub mod approvals;
+pub mod claims;
 pub mod config;
 pub mod configured;
 pub mod decision;
@@ -25,6 +26,7 @@ pub mod types;
 // ── core surface (flat re-exports) ──────────────────────────────────────────
 pub use adapter::{Adapter, AdapterFactory, ConfigCx, Ctx};
 pub use approvals::{ApprovalState, Approvals, QueuedItem};
+pub use claims::Claims;
 pub use config::{
     AdapterSection, Config, GlobalConfig, NotificationConfig, NotificationEvent, ScheduleConfig,
     Threshold, expand_tilde,

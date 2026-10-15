@@ -3,7 +3,8 @@
 //!
 //! An adapter has zero OS knowledge: it touches the world only through
 //! [`Ctx::platform`], persists state via [`Ctx::kv`] (a bucket pre-namespaced to
-//! the adapter), and records audit decisions via [`Ctx::decide`].
+//! the adapter), records audit decisions via [`Ctx::decide`], and marks the paths
+//! it owns via [`Ctx::claim`].
 //!
 //! It has zero TOML knowledge either: [`AdapterFactory::typed`] deserializes the
 //! `[adapters.<name>]` table into a type the adapter names, so a constructor
@@ -13,10 +14,12 @@
 //! by hand — comes from [`ConfigCx`].
 
 use std::fmt::Display;
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
+use crate::claims::Claims;
 use crate::decision::{Decision, DecisionLog};
 use crate::error::{AdapterError, ConfigError, parse_adapter_config};
 use crate::retention::RetentionPolicy;
@@ -32,7 +35,15 @@ pub struct Ctx<'run> {
     pub pressure: Pressure,
     /// The decision log (best-effort; a no-op when disabled).
     pub decisions: &'run DecisionLog,
+    /// Paths other adapters claimed earlier in this run. Empty unless supplied
+    /// with [`Ctx::with_claims`].
+    pub claims: &'run Claims,
+    /// Paths this adapter claimed through [`Ctx::claim`], for the engine to collect.
+    claimed: Vec<PathBuf>,
 }
+
+/// What a [`Ctx`] built without [`Ctx::with_claims`] sees: nothing claimed.
+static NO_CLAIMS: Claims = Claims::new();
 
 impl<'run> Ctx<'run> {
     /// Assemble a context from its parts.
@@ -47,7 +58,15 @@ impl<'run> Ctx<'run> {
             kv,
             pressure,
             decisions,
+            claims: &NO_CLAIMS,
+            claimed: Vec::new(),
         }
+    }
+
+    /// Let the adapter see the paths other adapters have claimed this run.
+    pub fn with_claims(mut self, claims: &'run Claims) -> Self {
+        self.claims = claims;
+        self
     }
 
     /// The current wall-clock time (from the platform clock).
@@ -58,6 +77,19 @@ impl<'run> Ctx<'run> {
     /// Record a decision at the current time and pressure.
     pub fn decide(&self, d: Decision) {
         self.decisions.record(self.now(), self.pressure, &d);
+    }
+
+    /// Claim `path`, and everything beneath it, for this adapter. Adapters that
+    /// plan later in the run see the claim in [`Ctx::claims`]. Claim everything
+    /// the adapter recognises as its own, including what it keeps.
+    pub fn claim(&mut self, path: impl Into<PathBuf>) {
+        self.claimed.push(path.into());
+    }
+
+    /// Drain the paths claimed through this context (the engine's side of
+    /// [`Ctx::claim`]).
+    pub fn take_claimed(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.claimed)
     }
 }
 
@@ -235,6 +267,32 @@ mod tests {
             &log,
         );
         ctx.decide(Decision::new(DecisionKind::Observed, "x", "id"));
+    }
+
+    #[test]
+    fn ctx_sees_supplied_claims_and_collects_its_own() {
+        let fake = FakePlatform::new();
+        let store = Store::open_in_memory().unwrap();
+        let log = DecisionLog::disabled();
+        let mut claims = Claims::new();
+        claims.insert(PathBuf::from("/dev/app/target"), "rust-target");
+
+        let bare = Ctx::new(&fake, store.bucket("x"), Pressure::Normal, &log);
+        assert_eq!(
+            bare.claims.owner(std::path::Path::new("/dev/app/target")),
+            None
+        );
+
+        let mut ctx =
+            Ctx::new(&fake, store.bucket("x"), Pressure::Normal, &log).with_claims(&claims);
+        assert_eq!(
+            ctx.claims
+                .owner(std::path::Path::new("/dev/app/target/debug")),
+            Some("rust-target")
+        );
+        ctx.claim("/dev/app/node_modules");
+        assert_eq!(ctx.take_claimed(), [PathBuf::from("/dev/app/node_modules")]);
+        assert!(ctx.take_claimed().is_empty());
     }
 
     #[test]

@@ -258,6 +258,9 @@ impl Adapter for PyCacheAdapter {
         let mut candidates: Vec<Candidate> = Vec::new();
 
         for f in find_artifacts(ctx.platform, &roots, &rules, &opts) {
+            // Ours whether or not it is old enough: `git-ignored` must not
+            // offer it up on the strength of its own, weaker age signal.
+            ctx.claim(f.artifact_dir.clone());
             let age = now.duration_since(f.last_active).unwrap_or_default();
             let id = f.artifact_dir.to_string_lossy().into_owned();
             let label = format!("{} in {}", f.rule, f.project_root.display());
