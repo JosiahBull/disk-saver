@@ -1,14 +1,44 @@
 //! Individually age completed download archives, preserving in-progress files.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use disk_saver_core::{
     Adapter, AdapterError, AdapterFactory, Candidate, Class, ConfigCx, Ctx, FileKind, Outcome,
     Platform, RetentionPolicy,
 };
+use serde::Deserialize;
 
-use crate::native::NativeConfig;
 use crate::safety::{access_label, real_path, record_plan, record_results};
+
+/// Config for a completed-download cache. Unlike native maintenance, archives are
+/// removed without asking: each is a re-fetchable file the tool downloads again
+/// on demand.
+#[derive(Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DownloadsConfig {
+    /// Normal-mode inactivity threshold.
+    #[serde(with = "humantime_serde")]
+    pub max_age: Duration,
+    /// Scavenge inactivity floor.
+    #[serde(with = "humantime_serde")]
+    pub min_age: Duration,
+    /// Queue removals for approval.
+    pub confirm: bool,
+    /// Explicit cache root override, otherwise resolved by the tool.
+    pub cache_dir: Option<PathBuf>,
+}
+
+impl Default for DownloadsConfig {
+    fn default() -> Self {
+        Self {
+            max_age: Duration::from_secs(30 * 86400),
+            min_age: Duration::from_secs(7 * 86400),
+            confirm: false,
+            cache_dir: None,
+        }
+    }
+}
 
 /// Resolve the tool's download directory.
 pub type DownloadRoot = fn(&dyn Platform, Option<&Path>) -> PathBuf;
@@ -18,7 +48,7 @@ pub type ArchiveName = fn(&str) -> bool;
 
 /// Build an adapter that only removes independently aged completed downloads.
 pub fn factory(name: &'static str, root: DownloadRoot, archive: ArchiveName) -> AdapterFactory {
-    AdapterFactory::typed(name, move |cfg: NativeConfig, cx: &ConfigCx| {
+    AdapterFactory::typed(name, move |cfg: DownloadsConfig, cx: &ConfigCx| {
         Ok(Downloads {
             name,
             root,
@@ -38,7 +68,7 @@ pub struct Downloads {
     /// Completed-archive filename predicate.
     pub archive: ArchiveName,
     /// Config.
-    pub cfg: NativeConfig,
+    pub cfg: DownloadsConfig,
     /// Validated age policy.
     pub policy: RetentionPolicy,
 }

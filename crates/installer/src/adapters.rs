@@ -59,7 +59,7 @@ pub const ADAPTERS: &[AdapterInfo] = &[
     },
     AdapterInfo {
         name: "nvm",
-        desc: "nvm downloads and idle Node versions — asks first",
+        desc: "nvm downloads; asks before removing idle Node versions",
         takes_roots: true,
     },
     AdapterInfo {
@@ -74,7 +74,7 @@ pub const ADAPTERS: &[AdapterInfo] = &[
     },
     AdapterInfo {
         name: "homebrew",
-        desc: "completed Homebrew downloads — asks first",
+        desc: "completed Homebrew downloads",
         takes_roots: false,
     },
     AdapterInfo {

@@ -52,7 +52,10 @@ fn only_completed_hashed_downloads_are_candidates_and_installed_packages_survive
     let mut ctx = Ctx::new(&p, store.bucket("homebrew"), Pressure::Normal, &log);
     let plan = a.plan(&mut ctx).unwrap();
     assert_eq!(plan.len(), 1);
-    assert!(plan[0].requires_confirmation);
+    assert!(
+        !plan[0].requires_confirmation,
+        "archives are removed without asking"
+    );
     assert!(p.removed().is_empty());
     assert!(p.commands_run().iter().all(|c| c.args == ["--cache"]));
     assert!(matches!(
@@ -110,4 +113,18 @@ fn configured_cache_cannot_escape_through_traversal_or_an_open_archive() {
         a.execute(&mut ctx, &[forged]).unwrap()[0],
         Outcome::Skipped { .. }
     ));
+}
+
+#[test]
+fn confirm_queues_archives_for_approval() {
+    let path = format!("/home/tester/cache/downloads/{}", archive());
+    let p = FakePlatform::new().with_file(&path, b"archive".to_vec(), t(300));
+    let cfg = toml::from_str("cache_dir = '~/cache'\nconfirm = true").unwrap();
+    let mut a = factory().build(Some(cfg)).unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let log = DecisionLog::disabled();
+    let mut ctx = Ctx::new(&p, store.bucket("homebrew"), Pressure::Normal, &log);
+    let plan = a.plan(&mut ctx).unwrap();
+    assert_eq!(plan.len(), 1);
+    assert!(plan[0].requires_confirmation);
 }

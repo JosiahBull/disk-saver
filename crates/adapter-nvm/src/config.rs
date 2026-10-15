@@ -21,7 +21,8 @@ pub struct Config {
     /// Scavenge inactivity floor.
     #[serde(with = "humantime_serde")]
     pub min_age: Duration,
-    /// Require approval for cache archives too. Versions always require it.
+    /// Require approval for cache archives too (off by default). Versions
+    /// always require it.
     pub confirm: bool,
 }
 
@@ -34,7 +35,7 @@ impl Default for Config {
             protect: vec![],
             max_age: Duration::from_secs(90 * 86400),
             min_age: Duration::from_secs(30 * 86400),
-            confirm: true,
+            confirm: false,
         }
     }
 }

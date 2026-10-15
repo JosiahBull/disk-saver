@@ -304,3 +304,24 @@ fn execute_skips_pycache_that_grew_a_source_file() {
     assert!(matches!(outcomes[0], Outcome::Skipped { .. }));
     assert!(fake.exists("~/dev/proj/__pycache__"));
 }
+
+#[test]
+fn claims_caches_it_keeps_as_well_as_those_it_plans() {
+    // 5 days old: kept under Normal, but still this adapter's to judge.
+    let fake = FakePlatform::new()
+        .with_file("~/dev/proj/mod.py", "print()", t(395))
+        .with_file(
+            "~/dev/proj/__pycache__/mod.cpython-311.pyc",
+            vec![0u8; 500],
+            t(395),
+        );
+    let mut a = adapter("roots = [\"~/dev\"]");
+    let store = Store::open_in_memory().unwrap();
+    let log = DecisionLog::disabled();
+    let mut ctx = Ctx::new(&fake, store.bucket(a.name()), Pressure::Normal, &log);
+    assert!(a.plan(&mut ctx).unwrap().is_empty());
+    assert_eq!(
+        ctx.take_claimed(),
+        [PathBuf::from("/home/tester/dev/proj/__pycache__")]
+    );
+}

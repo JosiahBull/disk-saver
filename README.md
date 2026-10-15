@@ -76,7 +76,8 @@ accept absolute sizes (`"40GB"`) or percentages (`"10%"`); durations use `"7d"`/
 
 ## Developer tool caches and Node versions
 
-The `nvm`, `uv`, `npm`, and `homebrew` adapters ask for approval by default:
+The `uv` and `npm` adapters ask for approval by default. `homebrew` and `nvm` remove completed
+download archives without asking, and `nvm` always asks before removing a Node version:
 
 | Adapter | Cleanup scope |
 |---|---|
@@ -95,7 +96,7 @@ roots = ["~/work", "~/personal"] # check .nvmrc and .node-version pins here
 max_age = "90d"
 min_age = "30d"
 include_versions = true
-confirm = true                  # applies to archives; versions always ask
+confirm = false                 # true also asks before removing archives; versions always ask
 protect = ["v24.18.1"]           # additional version or alias specifications
 # nvm_dir = "~/.nvm"             # otherwise NVM_DIR, then ~/.nvm
 
@@ -108,7 +109,7 @@ confirm = true
 # cache_dir = "~/.npm"            # otherwise queried from npm
 
 [adapters.homebrew]
-confirm = true
+confirm = false
 # cache_dir = "~/Library/Caches/Homebrew" # otherwise queried from brew
 ```
 

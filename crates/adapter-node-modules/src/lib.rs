@@ -118,6 +118,9 @@ impl Adapter for FsAdapter {
 
         let mut candidates = Vec::new();
         for f in find_artifacts(ctx.platform, &roots, RULES, &opts) {
+            // Ours whether or not it is old enough: `git-ignored` must not
+            // offer it up on the strength of its own, weaker age signal.
+            ctx.claim(f.artifact_dir.clone());
             let id = f.artifact_dir.to_string_lossy().into_owned();
             let label = format!("node_modules in {}", f.project_root.display());
             let age = ctx.now().duration_since(f.last_active).unwrap_or_default();

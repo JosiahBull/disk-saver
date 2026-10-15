@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-adapter-cargo-registry"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "disk-saver-cachedir",
  "disk-saver-core",
@@ -499,7 +499,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-adapter-docker"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "disk-saver-core",
@@ -517,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-adapter-git-gc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "disk-saver-core",
@@ -531,7 +531,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-adapter-git-ignored"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "disk-saver-core",
@@ -547,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-adapter-homebrew"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "disk-saver-cachedir",
  "disk-saver-core",
@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-adapter-node-modules"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "disk-saver-core",
@@ -574,7 +574,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-adapter-npm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "disk-saver-cachedir",
  "disk-saver-core",
@@ -582,7 +582,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-adapter-nvm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "disk-saver-cachedir",
  "disk-saver-core",
@@ -595,7 +595,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-adapter-pip"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "disk-saver-cachedir",
  "disk-saver-core",
@@ -606,7 +606,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-adapter-pnpm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "disk-saver-cachedir",
  "disk-saver-core",
@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-adapter-python-cache"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "disk-saver-core",
@@ -632,7 +632,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-adapter-rust-target"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "disk-saver-core",
@@ -648,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-adapter-trash"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "disk-saver-core",
@@ -663,7 +663,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-adapter-uv"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "disk-saver-cachedir",
  "disk-saver-core",
@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-cachedir"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "disk-saver-core",
  "disk-saver-kv",
@@ -684,7 +684,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytesize",
@@ -703,7 +703,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-installer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "disk-saver-core",
@@ -713,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-kv"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rusqlite",
  "serde",
@@ -724,7 +724,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-platform"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rustix",
  "tempfile",
@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "disk-saver-scan"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "disk-saver-platform",
  "globset",

@@ -243,6 +243,7 @@ pub struct Ctx<'run> {
     pub platform: &'run dyn Platform,
     pub kv: Bucket<'run>,        // KV handle pre-namespaced to this adapter
     pub pressure: Pressure,
+    pub claims: &'run Claims,    // paths earlier adapters claimed this run (§12.8)
 }
 ```
 
@@ -290,6 +291,10 @@ Why four phases instead of one `clean()`?
 
 Methods take `&mut self` so an adapter can carry in-memory notes from `observe` to `plan`
 within a run (durable state goes to KV). Adapters run sequentially, so this costs nothing.
+
+While planning, an adapter calls `ctx.claim(path)` for each artifact it recognises as its
+own, whether it proposes it or keeps it. Adapters planned later in the run see those paths
+in `ctx.claims`, which is how an overlapping adapter defers to a specialised one (§12.8).
 
 ### 4.2 Candidates
 
@@ -888,6 +893,9 @@ don't want `disk-saver`'s own scanning to matter either — it never writes into
 | `python-cache` | `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.tox/`; `.venv/` only if `include_venvs = true` | Rebuildable | dir-specific (e.g. `__pycache__` must contain only `*.pyc*`) | global pip/uv caches: dedicated adapters |
 | shared config | `roots` (required-ish; default `["~"]` with a built-in denylist: `~/Library`, `~/.Trash`, cache dirs), `exclude` globs, `RetentionPolicy`, `max_depth = 8`, `confirm = false` | | | |
 
+Each claims every artifact it finds, proposed or kept, so `git-ignored` leaves it to
+them (§12.8).
+
 These adapters need no KV state (age derives from the filesystem), but get a bucket
 anyway — future use: caching walk results, remembering "size at last sighting" for
 better reporting.
@@ -1002,8 +1010,10 @@ bounded; an incomplete or unsafe scan prevents retirement. Other project roots a
 claimed to be protected. Executable access evidence is displayed in the approval label.
 Approval repeats protection and activity checks, then uses `nvm uninstall`.
 
-All four ask for approval by default. Cache adapters use 30d/7d age defaults; nvm uses
-90d/30d. Unknown executable access times prevent Node retirement. Age is evidence for
+uv and npm ask for approval by default. homebrew and nvm remove completed download archives
+without asking, since each is re-fetched on demand; `confirm = true` queues them instead.
+Retiring an installed Node version always asks. Cache adapters use 30d/7d age defaults; nvm
+uses 90d/30d. Unknown executable access times prevent Node retirement. Age is evidence for
 review, not proof that an installation is unused.
 
 ### 12.7 `git-gc` — repacking idle repositories
@@ -1042,7 +1052,7 @@ database, uncommitted scratch work. So this adapter proposes and never disposes.
 |---|---|
 | Availability | `git --version`; missing or non-zero ⇒ `Unavailable` |
 | Discovers | repos under `roots` — same `.git` rule and shared resolution as §12.7 |
-| Plans | `git clean -Xdn` per repo — **ignored objects only**, never tracked and never plain-untracked files — filtered by policy age and by the `protect` globs |
+| Plans | `git clean -Xdn` per repo — **ignored objects only**, never tracked and never plain-untracked files — filtered by policy age, the `protect` globs, built-in names, and other adapters' claims |
 | Class | **UserData** — the last scavenge wave, after every rebuildable and every cache |
 | Confirmation | `confirm = true` **by default**: candidates queue for `disk-saver review` (§9) |
 | Config | `roots`, `exclude`, `max_depth`, `max_age`, `min_age`, `confirm`, `protect` |
@@ -1053,6 +1063,18 @@ database, uncommitted scratch work. So this adapter proposes and never disposes.
 again in `execute` immediately before removal — so an approval that has been sitting in the
 queue cannot delete a path that a config change has since protected. The second check is
 redundant by construction, which is the point.
+
+Some names are never proposed, whatever `protect` says: `.DS_Store`, `.claude`, `CLAUDE.md`
+and `CLAUDE.local.md`. These match any path component, so `.claude` also covers
+`.claude/worktrees`. Finder metadata is a few KB and not worth a review prompt. Claude Code's
+local state includes worktrees, which can hold uncommitted work.
+
+A `node_modules/`, `target/` or `__pycache__/` that a repository ignores is also an artifact
+of §12.2–12.4. Those adapters age it by project activity. This one has only the entry's own
+mtime, and a directory's mtime changes only when entries are added or removed. So they claim
+everything they find, and this adapter skips anything at or under a claimed path, logging it
+as `kept` with the claimant's name. The registry plans `git-ignored` after them. Claims come
+only from adapters in the same run, so `plan --adapter git-ignored` alone runs without them.
 
 ---
 

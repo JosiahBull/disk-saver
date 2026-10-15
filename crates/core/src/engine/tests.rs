@@ -55,6 +55,10 @@ struct Stub {
     behavior: Behavior,
     /// If set, `execute` raises the shared platform's free space (early-stop test).
     raise_free: Option<(Arc<FakePlatform>, u64, u64)>,
+    /// Paths `plan` claims.
+    claim: Vec<&'static str>,
+    /// A path whose claimant `plan` logs as `owner:<name>:<claimant or ->`.
+    probe: Option<&'static str>,
 }
 
 impl Stub {
@@ -65,7 +69,19 @@ impl Stub {
             plan: Vec::new(),
             behavior: Behavior::Ok,
             raise_free: None,
+            claim: Vec::new(),
+            probe: None,
         }
+    }
+
+    fn claim(mut self, path: &'static str) -> Self {
+        self.claim.push(path);
+        self
+    }
+
+    fn probe(mut self, path: &'static str) -> Self {
+        self.probe = Some(path);
+        self
     }
 
     fn with_plan(mut self, plan: Vec<Candidate>) -> Self {
@@ -106,10 +122,17 @@ impl Adapter for Stub {
         }
     }
 
-    fn plan(&mut self, _ctx: &mut Ctx) -> Result<Vec<Candidate>, AdapterError> {
+    fn plan(&mut self, ctx: &mut Ctx) -> Result<Vec<Candidate>, AdapterError> {
         self.push(format!("plan:{}", self.name));
         if let Behavior::PanicPlan = self.behavior {
             panic!("plan boom");
+        }
+        for path in &self.claim {
+            ctx.claim(*path);
+        }
+        if let Some(path) = self.probe {
+            let owner = ctx.claims.owner(std::path::Path::new(path)).unwrap_or("-");
+            self.push(format!("owner:{}:{owner}", self.name));
         }
         Ok(self.plan.clone())
     }
@@ -290,6 +313,30 @@ fn normal_executes_each_adapters_own_unflagged_candidates() {
 }
 
 // ── isolation ───────────────────────────────────────────────────────────────
+
+#[test]
+fn adapters_see_paths_claimed_by_those_planned_before_them() {
+    let fake = FakePlatform::new().with_free_space(150, 1000);
+    let store = crate::Store::open_in_memory().unwrap();
+    let cfg = Config::defaults();
+    let log = new_log();
+    let adapters = vec![
+        Stub::new("early", log.clone())
+            .probe("/dev/app/target")
+            .boxed(),
+        Stub::new("owner", log.clone())
+            .claim("/dev/app/target")
+            .boxed(),
+        Stub::new("late", log.clone())
+            .probe("/dev/app/target/debug")
+            .boxed(),
+    ];
+    run(&fake, &cfg, &store, adapters, &forced());
+
+    let ev = events(&log);
+    assert!(ev.contains(&"owner:early:-".to_string()), "{ev:?}");
+    assert!(ev.contains(&"owner:late:owner".to_string()), "{ev:?}");
+}
 
 #[test]
 fn panic_in_observe_becomes_failed_and_isolates_the_adapter() {

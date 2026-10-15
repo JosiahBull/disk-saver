@@ -522,7 +522,7 @@ roots = ["~/dev"]     # project pins to protect during Node retirement
 max_age = "90d"
 min_age = "30d"
 include_versions = true # installed versions ALWAYS require approval
-confirm = true         # also ask before removing downloaded archives
+confirm = false        # true also asks before removing downloaded archives
 # nvm_dir = "~/.nvm"   # otherwise uses NVM_DIR, then ~/.nvm
 # protect = ["v24.18.1"] # extra version/alias specifications to retain
 
@@ -541,7 +541,7 @@ confirm = true         # download cache only; preserves npx and installations
 [adapters.homebrew]
 max_age = "30d"
 min_age = "7d"
-confirm = true         # completed download archives only, never installed packages
+confirm = false        # completed download archives only, never installed packages
 # cache_dir = "~/Library/Caches/Homebrew" # otherwise uses `brew --cache`
 
 [adapters.git-ignored]

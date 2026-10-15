@@ -10,7 +10,9 @@ use disk_saver_core::AdapterFactory;
 ///
 /// Order matters: the engine observes/plans adapters in this order, and the
 /// scavenge impact-wave ordering is by [`Class`](disk_saver_core::Class), so a
-/// stable factory order keeps runs reproducible.
+/// stable factory order keeps runs reproducible. An adapter sees only the
+/// claims of adapters before it, so `git-ignored` follows the filesystem
+/// adapters whose artifacts it must leave to them.
 pub fn registry() -> Vec<AdapterFactory> {
     vec![
         #[cfg(feature = "docker")]
@@ -42,4 +44,23 @@ pub fn registry() -> Vec<AdapterFactory> {
         #[cfg(feature = "trash")]
         disk_saver_adapter_trash::factory(),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::registry;
+
+    #[test]
+    fn git_ignored_plans_after_the_adapters_whose_claims_it_honours() {
+        let names: Vec<&str> = registry().iter().map(|f| f.name).collect();
+        let at = |name| names.iter().position(|n| *n == name);
+        let Some(git_ignored) = at("git-ignored") else {
+            return;
+        };
+        for owner in ["node-modules", "rust-target", "python-cache"] {
+            if let Some(i) = at(owner) {
+                assert!(i < git_ignored, "{owner} must plan before git-ignored");
+            }
+        }
+    }
 }
