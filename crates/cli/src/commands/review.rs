@@ -6,6 +6,10 @@
 //! (`--list`), approves specified items (`--approve` / `--approve-all`), or
 //! prompts interactively. Approved items are executed *now* via the adapter's
 //! `execute`, exactly as if the run had deleted them.
+//!
+//! Only items flagged by this version are offered. Items another version
+//! queued wait for the next full run to re-check them against this version's
+//! rules; `review` says how many there are.
 
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::time::Duration;
@@ -22,6 +26,10 @@ use crate::output;
 
 /// "Not now" snooze duration (§9 default `14d`).
 const SNOOZE: Duration = Duration::from_secs(14 * 24 * 3600);
+
+/// The error for an `--approve` key that is not offered for review. Not a
+/// failure: nothing was attempted.
+const NOT_PENDING: &str = "not in the pending queue";
 
 /// A machine-readable projection of a [`QueuedItem`] for `--list --json`.
 #[derive(Serialize)]
@@ -82,9 +90,10 @@ fn review_locked(app: &App, args: &ReviewArgs) -> Result<u8> {
     let approvals = Approvals::open(&store);
     let now = app.platform.now();
     let pending = approvals.pending(now);
+    let waiting = approvals.awaiting_recheck(now);
 
     if args.list {
-        render_list(app, &pending);
+        render_list(app, &pending, &waiting);
         return Ok(0);
     }
 
@@ -95,16 +104,16 @@ fn review_locked(app: &App, args: &ReviewArgs) -> Result<u8> {
     let mut engine = Engine::new(&app.platform, &app.config, &store, &decisions, adapters);
 
     if args.approve_all || !args.approve.is_empty() {
-        return batch_approve(app, &mut engine, &approvals, args, &pending);
+        return batch_approve(app, &mut engine, &approvals, args, &pending, &waiting);
     }
 
     // Default: interactive review, but only with a real terminal to prompt on.
     if pending.is_empty() {
-        render_list(app, &pending);
+        render_list(app, &pending, &waiting);
         return Ok(0);
     }
     if app.json || !io::stdin().is_terminal() {
-        render_list(app, &pending);
+        render_list(app, &pending, &waiting);
         if !app.json {
             println!();
             println!(
@@ -114,12 +123,13 @@ fn review_locked(app: &App, args: &ReviewArgs) -> Result<u8> {
         }
         return Ok(0);
     }
+    print_recheck_note(&waiting);
     interactive(app, &mut engine, &approvals, &pending, now)
 }
 
 /// Print the pending queue: JSON view when `--json`, otherwise grouped by
-/// adapter with the biggest items first.
-fn render_list(app: &App, pending: &[QueuedItem]) {
+/// adapter with the biggest items first, then how many items await a re-check.
+fn render_list(app: &App, pending: &[QueuedItem], waiting: &[QueuedItem]) {
     if app.json {
         let views: Vec<QueuedView> = pending.iter().map(QueuedView::from).collect();
         if let Err(e) = output::print_json(&views) {
@@ -129,6 +139,7 @@ fn render_list(app: &App, pending: &[QueuedItem]) {
     }
     if pending.is_empty() {
         println!("no items awaiting approval");
+        print_recheck_note(waiting);
         return;
     }
     let mut current: Option<&str> = None;
@@ -149,6 +160,20 @@ fn render_list(app: &App, pending: &[QueuedItem]) {
         "{} item(s) pending — approve with `review --approve <key>` or `review --approve-all`.",
         pending.len(),
     );
+    print_recheck_note(waiting);
+}
+
+/// Say how many items another version queued, which `review` leaves out until
+/// a full run of this version re-checks them. Prints nothing if there are none.
+fn print_recheck_note(waiting: &[QueuedItem]) {
+    if waiting.is_empty() {
+        return;
+    }
+    println!(
+        "{} item(s) queued by another disk-saver version are hidden until the next \
+         full run re-checks them (`disk-saver run --force` runs one now).",
+        waiting.len(),
+    );
 }
 
 /// Non-interactive `--approve <key>…` / `--approve-all [--adapter <n>]`.
@@ -158,6 +183,7 @@ fn batch_approve(
     approvals: &Approvals<'_>,
     args: &ReviewArgs,
     pending: &[QueuedItem],
+    waiting: &[QueuedItem],
 ) -> Result<u8> {
     let mut targets: Vec<&QueuedItem> = Vec::new();
     let mut results: Vec<ApproveResult> = Vec::new();
@@ -170,15 +196,26 @@ fn batch_approve(
         }
     } else {
         for key in &args.approve {
-            match pending.iter().find(|it| &it.key() == key) {
-                Some(it) => targets.push(it),
-                None => results.push(ApproveResult {
-                    key: key.clone(),
-                    adapter: String::new(),
-                    outcomes: Vec::new(),
-                    error: Some("not in the pending queue".to_owned()),
-                }),
+            if let Some(it) = pending.iter().find(|it| &it.key() == key) {
+                targets.push(it);
+                continue;
             }
+            let error = match waiting.iter().find(|it| &it.key() == key) {
+                Some(it) => {
+                    let by = it.queued_by.as_deref().map_or_else(
+                        || "an earlier disk-saver".to_owned(),
+                        |v| format!("disk-saver {v}"),
+                    );
+                    format!("{NOT_PENDING}: queued by {by}; the next full run re-checks it")
+                }
+                None => NOT_PENDING.to_owned(),
+            };
+            results.push(ApproveResult {
+                key: key.clone(),
+                adapter: String::new(),
+                outcomes: Vec::new(),
+                error: Some(error),
+            });
         }
     }
 
@@ -197,6 +234,9 @@ fn batch_approve(
         }
         if results.is_empty() {
             println!("nothing to approve");
+        }
+        if args.approve_all {
+            print_recheck_note(waiting);
         }
     }
     Ok(if any_failed { 2 } else { 0 })
@@ -305,12 +345,12 @@ fn approve_one(
 
 /// Whether an [`ApproveResult`] represents a genuine failure (exit code 2): an
 /// [`AdapterError::Failed`] or any [`Outcome::Failed`]. Unavailable and
-/// not-queued are expected conditions.
+/// not-pending are expected conditions.
 fn result_failed(r: &ApproveResult) -> bool {
     let adapter_failed = r
         .error
         .as_deref()
-        .is_some_and(|e| !e.starts_with("unavailable:") && e != "not in the pending queue");
+        .is_some_and(|e| !e.starts_with("unavailable:") && !e.starts_with(NOT_PENDING));
     let outcome_failed = r
         .outcomes
         .iter()

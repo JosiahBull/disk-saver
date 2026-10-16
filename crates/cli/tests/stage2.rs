@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use assert_cmd::Command;
+use disk_saver_core::approvals::VERSION;
 use disk_saver_core::{ApprovalState, Candidate, Class, QueuedItem, Store};
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -47,6 +48,11 @@ fn write_config(home: &Path, state: &Path) -> PathBuf {
 /// Seed a single Pending `rust-target` approval whose candidate points at a
 /// (non-existent) `target/` directory. Returns the queue key.
 fn seed_approval(state: &Path) -> String {
+    seed_approval_queued_by(state, VERSION)
+}
+
+/// [`seed_approval`], as queued by a run of `version`.
+fn seed_approval_queued_by(state: &Path, version: &str) -> String {
     std::fs::create_dir_all(state).unwrap();
     let ghost = state.join("ghost/target");
     let item = QueuedItem {
@@ -62,6 +68,7 @@ fn seed_approval(state: &Path) -> String {
         first_queued_unix: 1_000,
         state: ApprovalState::Pending,
         snooze_until_unix: None,
+        queued_by: Some(version.to_owned()),
     };
     let key = item.key();
     let store = Store::open(&state.join("state.db")).unwrap();
@@ -87,6 +94,42 @@ fn review_list_json_shows_the_seeded_item() {
         .stdout(predicate::str::contains("\"adapter\": \"rust-target\""))
         .stdout(predicate::str::contains("\"state\": \"pending\""))
         .stdout(predicate::str::contains("\"bytes\": 4096"));
+}
+
+#[test]
+fn review_hides_items_another_version_queued() {
+    let home = TempDir::new().unwrap();
+    let state = home.path().join("state");
+    let config = write_config(home.path(), &state);
+    let key = seed_approval_queued_by(&state, "0.0.1");
+
+    cmd(home.path(), &config)
+        .args(["review", "--list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no items awaiting approval"))
+        .stdout(predicate::str::contains(
+            "1 item(s) queued by another disk-saver version",
+        ));
+
+    cmd(home.path(), &config)
+        .args(["review", "--list", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&key).not());
+
+    // Naming it explicitly is refused, without counting as a failure.
+    cmd(home.path(), &config)
+        .args(["review", "--approve", &key])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("queued by disk-saver 0.0.1"));
+
+    cmd(home.path(), &config)
+        .args(["status", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"pending_approvals\": 0"));
 }
 
 #[test]

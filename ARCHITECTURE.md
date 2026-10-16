@@ -739,6 +739,11 @@ Mechanics:
   preserving `first_queued`), candidates no longer planned (item vanished, no longer
   eligible, or pressure returned to Comfortable) are GC'd. The queue therefore never
   goes stale and never asks about something that no longer qualifies.
+- **An upgrade waits for a re-check.** Each item records the version whose run last
+  flagged it. A new version can change the rules, so `review`, `status` and the
+  `approvals_pending` notification count only items this version flagged. Items from
+  another version stay hidden (`review` says how many) until the next full run
+  re-flags or drops them. Denials and snoozes carry over unchanged.
 - **Hard rule:** flagged candidates are *never* auto-deleted, even at the bottom of
   scavenge. If scavenge exhausts unflagged candidates without reaching
   `scavenge_target`, the run notifies: "still low on space — 9.4 GB awaits your
