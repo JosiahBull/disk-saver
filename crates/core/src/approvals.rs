@@ -9,6 +9,11 @@
 //! [`rebuild`](Approvals::rebuild)s the queue from the current plan so it never
 //! goes stale — while preserving `first_queued` and any `DeniedForever` /
 //! active-`Snoozed` state.
+//!
+//! Each item also records the [`VERSION`] whose run last flagged it. A new
+//! version can change the rules, so until a full run of the new version
+//! re-checks an item, [`pending`](Approvals::pending) leaves it out: an upgrade
+//! never asks about something the new rules would not propose.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -17,6 +22,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::Candidate;
 use disk_saver_kv::{Bucket, Store};
+
+/// The version that stamps queued items. Every workspace crate inherits the
+/// workspace version, so this is the running binary's version.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Unix seconds for `t`, saturating to zero before the epoch.
 fn to_unix(t: SystemTime) -> u64 {
@@ -50,6 +59,10 @@ pub struct QueuedItem {
     pub state: ApprovalState,
     /// For [`Snoozed`](ApprovalState::Snoozed): unix seconds until re-asking.
     pub snooze_until_unix: Option<u64>,
+    /// The version whose run last flagged this item. `None` for items queued
+    /// before versions were recorded.
+    #[serde(default)]
+    pub queued_by: Option<String>,
 }
 
 impl QueuedItem {
@@ -81,19 +94,29 @@ impl QueuedItem {
         matches!(self.state, ApprovalState::Snoozed)
             && matches!(self.snooze_until_unix, Some(until) if now_unix < until)
     }
+
+    /// Whether a run of `version` flagged this item.
+    fn queued_by_version(&self, version: &str) -> bool {
+        self.queued_by.as_deref() == Some(version)
+    }
 }
 
 /// A handle over the reserved `_approvals` bucket. `now` is passed in for
 /// determinism.
 pub struct Approvals<'a> {
     bucket: Bucket<'a>,
+    /// The version that stamps rebuilt items and that [`pending`] trusts.
+    ///
+    /// [`pending`]: Approvals::pending
+    version: &'a str,
 }
 
 impl<'a> Approvals<'a> {
-    /// Open the approvals queue backed by `store`.
+    /// Open the approvals queue backed by `store`, as this build's [`VERSION`].
     pub fn open(store: &'a Store) -> Self {
         Approvals {
             bucket: store.bucket("_approvals"),
+            version: VERSION,
         }
     }
 
@@ -113,12 +136,25 @@ impl<'a> Approvals<'a> {
     }
 
     /// Items that are actionable-pending at `now` (Pending or expired-Snooze,
-    /// excluding DeniedForever). Preserves [`list`](Approvals::list) ordering.
+    /// excluding DeniedForever) and were flagged by this version. Preserves
+    /// [`list`](Approvals::list) ordering.
     pub fn pending(&self, now: SystemTime) -> Vec<QueuedItem> {
         let now_unix = to_unix(now);
         self.list()
             .into_iter()
-            .filter(|it| it.is_actionable(now_unix))
+            .filter(|it| it.is_actionable(now_unix) && it.queued_by_version(self.version))
+            .collect()
+    }
+
+    /// Items that would be actionable at `now` but were flagged by another
+    /// version, so this version has yet to re-check them. The next full run
+    /// either re-flags them (making them [`pending`](Approvals::pending)) or
+    /// drops them.
+    pub fn awaiting_recheck(&self, now: SystemTime) -> Vec<QueuedItem> {
+        let now_unix = to_unix(now);
+        self.list()
+            .into_iter()
+            .filter(|it| it.is_actionable(now_unix) && !it.queued_by_version(self.version))
             .collect()
     }
 
@@ -126,9 +162,11 @@ impl<'a> Approvals<'a> {
     ///
     /// New keys are added as `Pending` with `first_queued = now`; existing keys
     /// keep their `first_queued` and state (so a `DeniedForever` item stays
-    /// denied and a `Snoozed` item stays snoozed even after re-planning). Keys
-    /// no longer present are dropped unless they are `DeniedForever` or actively
-    /// `Snoozed`. Returns the count of currently actionable-pending items.
+    /// denied and a `Snoozed` item stays snoozed even after re-planning). Every
+    /// flagged item is stamped with this version. Keys no longer present are
+    /// dropped unless they are `DeniedForever` or actively `Snoozed`, and keep
+    /// their old stamp. Returns the count of [`pending`](Approvals::pending)
+    /// items.
     ///
     /// `authoritative` is the set of adapter names that actually ran to
     /// completion this cycle (were not filtered out by `--adapter` and did not
@@ -159,6 +197,7 @@ impl<'a> Approvals<'a> {
                     first_queued_unix: prev.first_queued_unix,
                     state: prev.state,
                     snooze_until_unix: prev.snooze_until_unix,
+                    queued_by: Some(self.version.to_owned()),
                 },
                 None => QueuedItem {
                     adapter: adapter.clone(),
@@ -166,6 +205,7 @@ impl<'a> Approvals<'a> {
                     first_queued_unix: now_unix,
                     state: ApprovalState::Pending,
                     snooze_until_unix: None,
+                    queued_by: Some(self.version.to_owned()),
                 },
             };
             next.insert(key, item);
@@ -197,7 +237,7 @@ impl<'a> Approvals<'a> {
         }
 
         next.values()
-            .filter(|it| it.is_actionable(now_unix))
+            .filter(|it| it.is_actionable(now_unix) && it.queued_by_version(self.version))
             .count()
     }
 
@@ -261,6 +301,14 @@ mod tests {
         ["trash".to_string()].into_iter().collect()
     }
 
+    /// The queue as a build of `version` would see it.
+    fn open_as<'a>(store: &'a Store, version: &'a str) -> Approvals<'a> {
+        Approvals {
+            bucket: store.bucket("_approvals"),
+            version,
+        }
+    }
+
     #[test]
     fn queued_item_key_format() {
         let it = QueuedItem {
@@ -269,8 +317,99 @@ mod tests {
             first_queued_unix: 0,
             state: ApprovalState::Pending,
             snooze_until_unix: None,
+            queued_by: None,
         };
         assert_eq!(it.key(), "trash/photo.png");
+    }
+
+    #[test]
+    fn rebuild_stamps_items_with_the_running_version() {
+        let store = Store::open_in_memory().unwrap();
+        let a = Approvals::open(&store);
+        a.rebuild(UNIX_EPOCH, &flagged(&[("trash", "a", 10)]), &auth());
+        assert_eq!(a.list()[0].queued_by.as_deref(), Some(VERSION));
+    }
+
+    #[test]
+    fn pending_waits_for_the_new_version_to_recheck_items() {
+        let store = Store::open_in_memory().unwrap();
+        let now = UNIX_EPOCH + Duration::from_secs(100);
+        open_as(&store, "0.1.0").rebuild(
+            now,
+            &flagged(&[("trash", "a", 10), ("trash", "b", 20), ("trash", "c", 30)]),
+            &auth(),
+        );
+        open_as(&store, "0.1.0").deny_forever("trash/c");
+
+        // After the upgrade, nothing is asked about until a run re-checks it.
+        let upgraded = open_as(&store, "0.2.0");
+        assert!(upgraded.pending(now).is_empty());
+        assert_eq!(upgraded.total_bytes_pending(now), 0);
+        let waiting: Vec<String> = upgraded
+            .awaiting_recheck(now)
+            .iter()
+            .map(QueuedItem::key)
+            .collect();
+        assert_eq!(waiting, ["trash/b", "trash/a"], "the denial is not waiting");
+
+        // The new rules still flag `a` and `c` but not `b`.
+        let later = UNIX_EPOCH + Duration::from_secs(500);
+        let n = upgraded.rebuild(
+            later,
+            &flagged(&[("trash", "a", 10), ("trash", "c", 30)]),
+            &auth(),
+        );
+        assert_eq!(n, 1);
+        let pending = upgraded.pending(later);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].key(), "trash/a");
+        assert_eq!(pending[0].first_queued_unix, 100, "first_queued preserved");
+        assert!(upgraded.awaiting_recheck(later).is_empty());
+        let denied = upgraded.list().into_iter().find(|it| it.key() == "trash/c");
+        assert_eq!(
+            denied.map(|it| it.state),
+            Some(ApprovalState::DeniedForever),
+            "a denial survives the upgrade"
+        );
+    }
+
+    #[test]
+    fn unstamped_items_from_older_versions_await_recheck() {
+        let store = Store::open_in_memory().unwrap();
+        let now = UNIX_EPOCH + Duration::from_secs(10);
+        // An item as written before `queued_by` existed.
+        let mut legacy = serde_json::to_value(QueuedItem {
+            adapter: "trash".into(),
+            candidate: cand("a", 10),
+            first_queued_unix: 0,
+            state: ApprovalState::Pending,
+            snooze_until_unix: None,
+            queued_by: None,
+        })
+        .unwrap();
+        legacy.as_object_mut().unwrap().remove("queued_by");
+        store
+            .bucket("_approvals")
+            .set("trash/a", &legacy, now)
+            .unwrap();
+
+        let a = Approvals::open(&store);
+        assert!(a.pending(now).is_empty());
+        assert_eq!(a.awaiting_recheck(now).len(), 1);
+    }
+
+    #[test]
+    fn items_of_an_adapter_that_did_not_run_keep_waiting() {
+        let store = Store::open_in_memory().unwrap();
+        let now = UNIX_EPOCH + Duration::from_secs(10);
+        open_as(&store, "0.1.0").rebuild(now, &flagged(&[("trash", "a", 10)]), &auth());
+
+        // trash did not run, so the new version learned nothing about `a`.
+        let upgraded = open_as(&store, "0.2.0");
+        let docker_only: BTreeSet<String> = ["docker".to_string()].into_iter().collect();
+        assert_eq!(upgraded.rebuild(now, &[], &docker_only), 0);
+        assert!(upgraded.pending(now).is_empty());
+        assert_eq!(upgraded.awaiting_recheck(now).len(), 1);
     }
 
     #[test]
