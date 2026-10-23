@@ -1,0 +1,26 @@
+[package]
+name = "disk-saver-adapter-rustup"
+description = "disk-saver adapter for Rust toolchains no active project pins."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+disk-saver-core.workspace = true
+disk-saver-scan.workspace = true
+disk-saver-cachedir.workspace = true
+serde.workspace = true
+humantime-serde.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# `decision-log` so the tests can read back the reasons `why` would show.
+disk-saver-core = { workspace = true, features = ["decision-log"] }
+disk-saver-platform = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

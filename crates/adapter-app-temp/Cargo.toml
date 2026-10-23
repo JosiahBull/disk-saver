@@ -1,0 +1,23 @@
+[package]
+name = "disk-saver-adapter-app-temp"
+description = "disk-saver adapter for old files in macOS app-sandbox temp folders."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+disk-saver-core.workspace = true
+disk-saver-cachedir.workspace = true
+serde.workspace = true
+humantime-serde.workspace = true
+tracing.workspace = true
+bytesize.workspace = true
+
+[dev-dependencies]
+disk-saver-platform = { workspace = true, features = ["test-util"] }
+toml.workspace = true
+
+[lints]
+workspace = true

@@ -481,6 +481,15 @@ max_age = "7d"
 min_age = "1d"        # re-pulling an image costs a network round-trip
 protect = ["postgres:*"]
 
+[adapters.orbstack]
+min_gap = "10GB"      # disk-image space Docker doesn't account for, before it counts
+max_age = "3d"        # how long that gap must persist before a reset is offered
+min_age = "1d"
+# Always asks: a reset deletes every image. Offered only with no containers,
+# volumes, Linux machines or Kubernetes.
+# data_image = "~/Library/Group Containers/HUAQ24HBR6.dev.orbstack/data/data.img.raw"
+# docker_context = "orbstack"
+
 [adapters.node-modules]
 roots   = ["~/dev", "~/work"]
 max_age = "30d"
@@ -526,6 +535,14 @@ confirm = false        # true also asks before removing downloaded archives
 # nvm_dir = "~/.nvm"   # otherwise uses NVM_DIR, then ~/.nvm
 # protect = ["v24.18.1"] # extra version/alias specifications to retain
 
+[adapters.rustup]
+roots        = ["~/dev"] # rust-toolchain pins here protect their toolchains...
+pin_max_idle = "30d"     # ...while their project was edited within this long
+max_age      = "30d"
+min_age      = "7d"
+confirm      = true      # default, stable/beta/nightly channels are never proposed
+# rustup = "~/.cargo/bin/rustup" # otherwise $CARGO_HOME/bin, then ~/.cargo/bin
+
 [adapters.uv]
 max_age = "30d"
 min_age = "7d"
@@ -544,12 +561,32 @@ min_age = "7d"
 confirm = false        # completed download archives only, never installed packages
 # cache_dir = "~/Library/Caches/Homebrew" # otherwise uses `brew --cache`
 
+[adapters.cachedir-tag]
+roots         = ["~/.cache"] # directories marked with a CACHEDIR.TAG under these
+max_depth     = 3
+max_age       = "30d"
+min_age       = "1d"
+confirm       = false
+skip_creators = ["uv"]       # caches another adapter maintains through its tool
+
+[adapters.orphaned-worktree]
+roots   = ["~/dev"]     # git worktree checkouts whose repository no longer lists them
+max_age = "14d"
+min_age = "3d"
+confirm = true          # labels say whether any file's content is missing from git
+
 [adapters.git-ignored]
 roots   = ["~/dev"]     # remove git-ignored objects (build dirs, logs, …)
 max_age = "30d"
 min_age = "7d"
 confirm = true          # UserData: queues for `disk-saver review`, never auto-deletes
 protect = ["*env*"]     # never touch entries whose name matches these (e.g. .env, venv)
+
+[adapters.app-temp]
+max_age = "30d"         # old items in ~/Library/Containers/<app>/Data/tmp (macOS)
+min_age = "7d"
+confirm = true          # UserData: a temp file may be the only copy of a download
+exclude_bundles = []    # container folder names (bundle ids) to leave alone
 
 [adapters.trash]
 max_age = "60d"

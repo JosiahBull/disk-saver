@@ -458,6 +458,8 @@ dependencies = [
  "assert_cmd",
  "bytesize",
  "clap",
+ "disk-saver-adapter-app-temp",
+ "disk-saver-adapter-cachedir-tag",
  "disk-saver-adapter-cargo-registry",
  "disk-saver-adapter-docker",
  "disk-saver-adapter-git-gc",
@@ -466,10 +468,13 @@ dependencies = [
  "disk-saver-adapter-node-modules",
  "disk-saver-adapter-npm",
  "disk-saver-adapter-nvm",
+ "disk-saver-adapter-orbstack",
+ "disk-saver-adapter-orphaned-worktree",
  "disk-saver-adapter-pip",
  "disk-saver-adapter-pnpm",
  "disk-saver-adapter-python-cache",
  "disk-saver-adapter-rust-target",
+ "disk-saver-adapter-rustup",
  "disk-saver-adapter-trash",
  "disk-saver-adapter-uv",
  "disk-saver-core",
@@ -485,6 +490,35 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "disk-saver-adapter-app-temp"
+version = "0.3.1"
+dependencies = [
+ "bytesize",
+ "disk-saver-cachedir",
+ "disk-saver-core",
+ "disk-saver-platform",
+ "humantime-serde",
+ "serde",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "disk-saver-adapter-cachedir-tag"
+version = "0.3.1"
+dependencies = [
+ "anyhow",
+ "disk-saver-core",
+ "disk-saver-platform",
+ "disk-saver-scan",
+ "globset",
+ "humantime",
+ "humantime-serde",
+ "serde",
+ "toml",
 ]
 
 [[package]]
@@ -594,6 +628,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "disk-saver-adapter-orbstack"
+version = "0.3.1"
+dependencies = [
+ "anyhow",
+ "bytesize",
+ "disk-saver-core",
+ "disk-saver-platform",
+ "humantime",
+ "humantime-serde",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "disk-saver-adapter-orphaned-worktree"
+version = "0.3.1"
+dependencies = [
+ "anyhow",
+ "disk-saver-core",
+ "disk-saver-platform",
+ "disk-saver-scan",
+ "globset",
+ "humantime-serde",
+ "serde",
+ "tempfile",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "disk-saver-adapter-pip"
 version = "0.3.1"
 dependencies = [
@@ -642,6 +709,21 @@ dependencies = [
  "globset",
  "humantime-serde",
  "serde",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "disk-saver-adapter-rustup"
+version = "0.3.1"
+dependencies = [
+ "disk-saver-cachedir",
+ "disk-saver-core",
+ "disk-saver-platform",
+ "disk-saver-scan",
+ "humantime-serde",
+ "serde",
+ "tempfile",
  "toml",
  "tracing",
 ]

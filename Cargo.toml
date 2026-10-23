@@ -41,6 +41,12 @@ disk-saver-adapter-uv = { path = "crates/adapter-uv", version = "0.3.1" }
 disk-saver-adapter-npm = { path = "crates/adapter-npm", version = "0.3.1" }
 disk-saver-adapter-homebrew = { path = "crates/adapter-homebrew", version = "0.3.1" }
 
+disk-saver-adapter-orbstack = { path = "crates/adapter-orbstack", version = "0.3.1" }
+disk-saver-adapter-rustup = { path = "crates/adapter-rustup", version = "0.3.1" }
+disk-saver-adapter-cachedir-tag = { path = "crates/adapter-cachedir-tag", version = "0.3.1" }
+disk-saver-adapter-orphaned-worktree = { path = "crates/adapter-orphaned-worktree", version = "0.3.1" }
+disk-saver-adapter-app-temp = { path = "crates/adapter-app-temp", version = "0.3.1" }
+
 # ── external ──
 anyhow = "1"
 bytesize = "2.7"
