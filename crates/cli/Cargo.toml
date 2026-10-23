@@ -68,6 +68,12 @@ disk-saver-adapter-uv = { workspace = true, optional = true }
 disk-saver-adapter-npm = { workspace = true, optional = true }
 disk-saver-adapter-homebrew = { workspace = true, optional = true }
 
+disk-saver-adapter-orbstack = { workspace = true, optional = true }
+disk-saver-adapter-rustup = { workspace = true, optional = true }
+disk-saver-adapter-cachedir-tag = { workspace = true, optional = true }
+disk-saver-adapter-orphaned-worktree = { workspace = true, optional = true }
+disk-saver-adapter-app-temp = { workspace = true, optional = true }
+
 clap.workspace = true
 anyhow.workspace = true
 serde.workspace = true
@@ -96,6 +102,11 @@ default = [
     "uv",
     "npm",
     "homebrew",
+    "orbstack",
+    "rustup",
+    "cachedir-tag",
+    "orphaned-worktree",
+    "app-temp",
     "decision-log",
 ]
 docker = ["dep:disk-saver-adapter-docker"]
@@ -112,6 +123,11 @@ nvm = ["dep:disk-saver-adapter-nvm"]
 uv = ["dep:disk-saver-adapter-uv"]
 npm = ["dep:disk-saver-adapter-npm"]
 homebrew = ["dep:disk-saver-adapter-homebrew"]
+orbstack = ["dep:disk-saver-adapter-orbstack"]
+rustup = ["dep:disk-saver-adapter-rustup"]
+cachedir-tag = ["dep:disk-saver-adapter-cachedir-tag"]
+orphaned-worktree = ["dep:disk-saver-adapter-orphaned-worktree"]
+app-temp = ["dep:disk-saver-adapter-app-temp"]
 decision-log = ["disk-saver-core/decision-log"]
 
 [dev-dependencies]

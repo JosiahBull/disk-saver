@@ -125,6 +125,37 @@ Reported freed bytes use the observed size decrease after maintenance.
 Preview with `disk-saver plan --adapter nvm --adapter uv --adapter npm --adapter homebrew --pressure scavenge --detailed`.
 Planning does not run cleanup commands or add items to the approval queue.
 
+## Leftovers nothing else cleans
+
+These find things that pile up without belonging to any one tool's cache:
+
+| Adapter | Cleanup scope | Asks first? |
+|---|---|---|
+| `orphaned-worktree` | git worktree checkouts whose repository no longer lists them. The label says whether any file's content is missing from git. Never touches agent worktrees (`.claude`, `.codex`, `~/Documents/Codex`). | Yes, unless `confirm = false` and nothing is missing |
+| `rustup` | Rust toolchains no recent project needs. A `rust-toolchain` pin protects its toolchain only while its project was edited within `pin_max_idle`. The default toolchain and `stable`/`beta`/`nightly` are never proposed. | Yes (default) |
+| `cachedir-tag` | Directories marked with a `CACHEDIR.TAG` under `~/.cache`, such as a cargo target dir outside any project. Skips virtualenvs and uv's cache. | No (default) |
+| `orbstack` | OrbStack disk-image space Docker no longer accounts for, by resetting OrbStack once the gap has lasted days. Only with no containers, volumes, Linux machines or Kubernetes. | Always |
+| `app-temp` | Old items in macOS app-sandbox temp folders (`~/Library/Containers/*/Data/tmp`), which nothing else ever empties. Needs Full Disk Access. | Yes (default) |
+
+```toml
+[adapters.orphaned-worktree]
+roots = ["~/work", "~/personal"]
+max_age = "14d"
+
+[adapters.rustup]
+roots = ["~/work", "~/personal"] # where rust-toolchain pins are looked for
+pin_max_idle = "30d"
+
+[adapters.cachedir-tag]
+roots = ["~/.cache"]
+
+[adapters.orbstack]
+min_gap = "10GB"
+
+[adapters.app-temp]
+exclude_bundles = ["com.apple.geod"]
+```
+
 ## Development
 
 ```sh

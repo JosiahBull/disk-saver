@@ -23,6 +23,11 @@ pub const ADAPTERS: &[AdapterInfo] = &[
         takes_roots: false,
     },
     AdapterInfo {
+        name: "orbstack",
+        desc: "OrbStack disk space Docker no longer accounts for — asks first",
+        takes_roots: false,
+    },
+    AdapterInfo {
         name: "node-modules",
         desc: "node_modules/ directories",
         takes_roots: true,
@@ -63,6 +68,11 @@ pub const ADAPTERS: &[AdapterInfo] = &[
         takes_roots: true,
     },
     AdapterInfo {
+        name: "rustup",
+        desc: "Rust toolchains no recently active project pins — asks first",
+        takes_roots: true,
+    },
+    AdapterInfo {
         name: "uv",
         desc: "unused uv cache entries — asks first",
         takes_roots: false,
@@ -78,9 +88,24 @@ pub const ADAPTERS: &[AdapterInfo] = &[
         takes_roots: false,
     },
     AdapterInfo {
+        name: "cachedir-tag",
+        desc: "caches marked with a CACHEDIR.TAG under ~/.cache",
+        takes_roots: false,
+    },
+    AdapterInfo {
+        name: "orphaned-worktree",
+        desc: "git worktrees their repository has forgotten — asks first",
+        takes_roots: true,
+    },
+    AdapterInfo {
         name: "git-ignored",
         desc: "git-ignored objects — asks first",
         takes_roots: true,
+    },
+    AdapterInfo {
+        name: "app-temp",
+        desc: "old files in app sandbox temp folders (macOS) — asks first",
+        takes_roots: false,
     },
     AdapterInfo {
         name: "trash",

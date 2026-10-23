@@ -7,6 +7,11 @@
 //! out how recently the surrounding *project* was active so an age policy can
 //! be applied. That shared walk lives here.
 //!
+//! Two smaller walks share its guardrails: [`find_dirs`], for directories
+//! recognised by a predicate rather than a fixed name (orphaned worktrees,
+//! `CACHEDIR.TAG` caches), and [`find_marker_files`], for projects that pin
+//! something in a file (`rust-toolchain.toml`) together with their activity.
+//!
 //! # Safety guardrails
 //!
 //! The walk implements the guardrails from `ARCHITECTURE.md` §11.5–8 / §12.2:
@@ -149,6 +154,146 @@ pub fn find_artifacts(
     walk.out
 }
 
+/// Walk every root and return each directory `matches` accepts.
+///
+/// For when the thing to find is not a fixed artifact name next to a sibling
+/// file — "a checkout whose `.git` file points nowhere", "a directory carrying a
+/// `CACHEDIR.TAG`". The same guardrails as [`find_artifacts`] apply: the
+/// `.disk-saver-keep` sentinel (in a walked directory *or* in the matched one),
+/// `max_depth`, the `exclude` set, no symlinks, and no crossing onto another
+/// filesystem.
+///
+/// One difference is deliberate: `matches` is also offered dot-named
+/// directories. Agents and scripts park worktrees in names like `.wt-feature`,
+/// and those are exactly what a matcher may be looking for. The walk still never
+/// *descends* into a dot-directory, and never descends into a match, so a match
+/// nested inside another match is not reported.
+pub fn find_dirs(
+    p: &dyn Platform,
+    roots: &[PathBuf],
+    opts: &ScanOptions,
+    matches: &dyn Fn(&dyn Platform, &DirEntry) -> bool,
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for root in roots {
+        let root_dev = p.metadata(root).map(|m| m.dev).ok();
+        walk_dirs(p, root, 0, opts, root_dev, matches, &mut out);
+    }
+    out
+}
+
+/// The recursive body of [`find_dirs`].
+fn walk_dirs(
+    p: &dyn Platform,
+    dir: &Path,
+    depth: usize,
+    opts: &ScanOptions,
+    root_dev: Option<u64>,
+    matches: &dyn Fn(&dyn Platform, &DirEntry) -> bool,
+    out: &mut Vec<PathBuf>,
+) {
+    if opts.exclude.is_match(dir) {
+        return;
+    }
+    let Ok(entries) = p.read_dir(dir) else {
+        return;
+    };
+    if entries.iter().any(|e| e.file_name == KEEP_SENTINEL) {
+        return;
+    }
+    for entry in &entries {
+        if entry.kind != FileKind::Dir || opts.exclude.is_match(&entry.path) {
+            continue;
+        }
+        // Another filesystem is neither reported nor walked (§11.8).
+        if let Some(root_dev) = root_dev
+            && p.metadata(&entry.path).map(|m| m.dev).ok() != Some(root_dev)
+        {
+            continue;
+        }
+        if matches(p, entry) {
+            if p.metadata(&entry.path.join(KEEP_SENTINEL)).is_err() {
+                out.push(entry.path.clone());
+            }
+            continue;
+        }
+        if depth < opts.max_depth && !entry.file_name.starts_with('.') {
+            walk_dirs(p, &entry.path, depth + 1, opts, root_dev, matches, out);
+        }
+    }
+}
+
+/// A project holding one of the marker files [`find_marker_files`] looks for.
+#[derive(Debug, Clone)]
+pub struct Marked {
+    /// Absolute path of the marker file, e.g. `<project>/rust-toolchain.toml`.
+    pub file: PathBuf,
+    /// The directory holding it.
+    pub project_root: PathBuf,
+    /// How recently the project was active, computed exactly as
+    /// [`Found::last_active`] is (see [`find_artifacts`]).
+    pub last_active: SystemTime,
+}
+
+/// What [`find_marker_files`] found, and where it could not look.
+#[derive(Debug, Clone, Default)]
+pub struct MarkerScan {
+    /// Every marker file found, with its project's activity.
+    pub marked: Vec<Marked>,
+    /// Directories the walk could not read (any error but not-found). A pin in
+    /// one was not seen, so an adapter protecting what pins name should treat
+    /// a non-empty list as an incomplete scan.
+    pub unreadable: Vec<PathBuf>,
+    /// Directories at `max_depth` that hold subdirectories the walk did not
+    /// enter. Kept apart from `unreadable` because a depth limit is a choice,
+    /// shared by every walk, and is hit routinely (vendored chart trees, deep
+    /// fixtures) where no project root lives.
+    pub too_deep: Vec<PathBuf>,
+}
+
+/// Walk every root and return one [`Marked`] per file named in `names`, with
+/// its project's activity.
+///
+/// For an adapter that needs to know which projects *pin* something — a
+/// `rust-toolchain.toml`, an `.nvmrc` — and whether anyone still works on them.
+/// Unlike [`find_artifacts`] the walk keeps descending below a match, so a
+/// nested project with its own pin is found too. `ignore` names directories
+/// whose mtimes do not count as activity and that are never descended — the
+/// build output a project regenerates (`target`, `node_modules`), which would
+/// otherwise make the activity walk both slow and wrong.
+///
+/// This walk *protects* rather than deletes, so two guardrails flip. The
+/// `.disk-saver-keep` sentinel is not honoured: a kept project's pin should
+/// still protect what it names. And a marker that is a symlink is reported
+/// (the walk still never descends through one): reading it is harmless, while
+/// missing it would leave its toolchain unprotected. The other guardrails —
+/// `max_depth`, `exclude`, dot-directories, staying on one filesystem — apply.
+/// Where the walk could not read, or stopped at `max_depth`, is listed in
+/// [`MarkerScan::unreadable`] and [`MarkerScan::too_deep`].
+pub fn find_marker_files(
+    p: &dyn Platform,
+    roots: &[PathBuf],
+    names: &[&str],
+    ignore: &[&'static str],
+    opts: &ScanOptions,
+) -> MarkerScan {
+    let ignored: HashSet<&str> = ignore.iter().copied().collect();
+    let mut walk = Walk {
+        p,
+        rules: &[],
+        rule_names: &ignored,
+        opts,
+        root_dev: None,
+        out: Vec::new(),
+    };
+    let mut scan = MarkerScan::default();
+    for root in roots {
+        walk.root_dev = p.metadata(root).map(|m| m.dev).ok();
+        walk.run_markers(root, 0, names, &mut scan);
+    }
+    scan
+}
+
 /// Mutable walk state, so the recursive helper stays a single method rather
 /// than a function with a long argument list.
 struct Walk<'a> {
@@ -163,6 +308,53 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
+    /// [`find_marker_files`]'s walk: report every marker file in `dir`, then
+    /// descend into its real, non-dot, non-ignored subdirectories.
+    fn run_markers(&self, dir: &Path, depth: usize, names: &[&str], scan: &mut MarkerScan) {
+        if self.opts.exclude.is_match(dir) {
+            return;
+        }
+        let entries = match self.p.read_dir(dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) => {
+                scan.unreadable.push(dir.to_path_buf());
+                return;
+            }
+        };
+        let mut last_active = None;
+        for entry in &entries {
+            let file_like = matches!(entry.kind, FileKind::File | FileKind::Symlink);
+            if file_like && names.contains(&entry.file_name.as_str()) {
+                let when = *last_active.get_or_insert_with(|| self.last_active(dir, &entries));
+                scan.marked.push(Marked {
+                    file: entry.path.clone(),
+                    project_root: dir.to_path_buf(),
+                    last_active: when,
+                });
+            }
+        }
+        for entry in &entries {
+            if entry.kind != FileKind::Dir
+                || entry.file_name.starts_with('.')
+                || self.rule_names.contains(entry.file_name.as_str())
+                || self.opts.exclude.is_match(&entry.path)
+            {
+                continue;
+            }
+            if let Some(root_dev) = self.root_dev
+                && self.p.metadata(&entry.path).map(|m| m.dev).ok() != Some(root_dev)
+            {
+                continue;
+            }
+            if depth >= self.opts.max_depth {
+                scan.too_deep.push(dir.to_path_buf());
+                return;
+            }
+            self.run_markers(&entry.path, depth + 1, names, scan);
+        }
+    }
+
     /// Examine `dir` (at `depth` below its root) for matches and recurse.
     fn run(&mut self, dir: &Path, depth: usize) {
         // Excluded subtree: prune entirely.
@@ -1120,5 +1312,164 @@ mod tests {
             ..FsConfig::default()
         };
         assert!(cfg.glob_set().is_err());
+    }
+
+    /// A `find_dirs` matcher: "has a `.git` file", i.e. a linked worktree.
+    fn has_git_file(p: &dyn Platform, e: &DirEntry) -> bool {
+        p.metadata(&e.path.join(".git"))
+            .is_ok_and(|m| m.kind == FileKind::File)
+    }
+
+    #[test]
+    fn find_dirs_offers_dot_dirs_to_the_matcher_but_never_descends_them() {
+        let fake = FakePlatform::new()
+            .with_file("~/work/.wt-feature/.git", "gitdir: x", t(10))
+            .with_file("~/work/app/.git", "gitdir: y", t(10))
+            .with_file("~/work/.hidden/nested/.git", "gitdir: z", t(10));
+
+        let mut found = find_dirs(
+            &fake,
+            &[PathBuf::from("~/work")],
+            &ScanOptions::default(),
+            &has_git_file,
+        );
+        found.sort();
+
+        assert_eq!(
+            found,
+            vec![
+                PathBuf::from("/home/tester/work/.wt-feature"),
+                PathBuf::from("/home/tester/work/app"),
+            ]
+        );
+    }
+
+    #[test]
+    fn find_dirs_does_not_descend_into_a_match() {
+        let fake = FakePlatform::new()
+            .with_file("~/work/outer/.git", "gitdir: x", t(10))
+            .with_file("~/work/outer/inner/.git", "gitdir: y", t(10));
+
+        let found = find_dirs(
+            &fake,
+            &[PathBuf::from("~/work")],
+            &ScanOptions::default(),
+            &has_git_file,
+        );
+
+        assert_eq!(found, vec![PathBuf::from("/home/tester/work/outer")]);
+    }
+
+    #[test]
+    fn find_dirs_honours_sentinel_exclude_depth_mounts_and_symlinks() {
+        let fake = FakePlatform::new()
+            .with_file("~/work/kept/.disk-saver-keep", "", t(10))
+            .with_file("~/work/kept/wt/.git", "gitdir: a", t(10))
+            .with_file("~/work/self-kept/.git", "gitdir: b", t(10))
+            .with_file("~/work/self-kept/.disk-saver-keep", "", t(10))
+            .with_file("~/work/excluded/wt/.git", "gitdir: c", t(10))
+            .with_file("~/work/a/b/c/deep/.git", "gitdir: d", t(10))
+            .with_mount("~/work/mnt")
+            .with_file("~/work/mnt/wt/.git", "gitdir: e", t(10))
+            .with_file("~/elsewhere/wt/.git", "gitdir: f", t(10))
+            .with_symlink("~/work/link", "~/elsewhere", t(10));
+        let mut opts = opts_excluding(&["/home/tester/work/excluded"]);
+        opts.max_depth = 2;
+
+        let found = find_dirs(&fake, &[PathBuf::from("~/work")], &opts, &has_git_file);
+
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn find_marker_files_reports_nested_pins_with_project_activity() {
+        let fake = FakePlatform::new()
+            .with_file("~/dev/app/rust-toolchain.toml", "", t(10))
+            .with_file("~/dev/app/src/main.rs", "", t(40))
+            .with_sized_dir("~/dev/app/target", 1_000, t(90))
+            .with_file("~/dev/app/target/debug/rust-toolchain", "", t(90))
+            .with_file("~/dev/app/libs/inner/rust-toolchain", "", t(20))
+            .with_file("~/dev/.hidden/rust-toolchain", "", t(20));
+
+        let scan = find_marker_files(
+            &fake,
+            &[PathBuf::from("~/dev")],
+            &["rust-toolchain", "rust-toolchain.toml"],
+            &["target"],
+            &ScanOptions::default(),
+        );
+        assert!(
+            scan.unreadable.is_empty() && scan.too_deep.is_empty(),
+            "{scan:?}"
+        );
+        let mut found = scan.marked;
+        found.sort_by(|a, b| a.file.cmp(&b.file));
+
+        let files: Vec<_> = found.iter().map(|m| m.file.clone()).collect();
+        assert_eq!(
+            files,
+            vec![
+                PathBuf::from("/home/tester/dev/app/libs/inner/rust-toolchain"),
+                PathBuf::from("/home/tester/dev/app/rust-toolchain.toml"),
+            ]
+        );
+        // The outer project's edit to src/ counts; its target/ does not.
+        assert_eq!(found[1].project_root, PathBuf::from("/home/tester/dev/app"));
+        assert_eq!(found[1].last_active, t(40));
+        assert_eq!(found[0].last_active, t(20));
+    }
+
+    #[test]
+    fn find_marker_files_reports_kept_and_symlinked_pins() {
+        // A sentinel exempts a project from deletion, not from protecting what
+        // its pin names; a symlinked pin still names a toolchain.
+        let fake = FakePlatform::new()
+            .with_file("~/dev/kept/.disk-saver-keep", "", t(10))
+            .with_file("~/dev/kept/rust-toolchain", "1.90.0", t(10))
+            .with_file("~/shared/rust-toolchain", "1.91.0", t(10))
+            .with_symlink(
+                "~/dev/linked/rust-toolchain",
+                "~/shared/rust-toolchain",
+                t(10),
+            );
+
+        let scan = find_marker_files(
+            &fake,
+            &[PathBuf::from("~/dev")],
+            &["rust-toolchain"],
+            &[],
+            &ScanOptions::default(),
+        );
+        let mut files: Vec<_> = scan.marked.into_iter().map(|m| m.file).collect();
+        files.sort();
+
+        assert_eq!(
+            files,
+            vec![
+                PathBuf::from("/home/tester/dev/kept/rust-toolchain"),
+                PathBuf::from("/home/tester/dev/linked/rust-toolchain"),
+            ]
+        );
+    }
+
+    #[test]
+    fn find_marker_files_lists_where_depth_stopped_it() {
+        let fake = FakePlatform::new()
+            .with_file("~/dev/a/rust-toolchain", "1.90.0", t(10))
+            .with_file("~/dev/a/b/c/rust-toolchain", "1.91.0", t(10))
+            .with_file("~/dev/leaf/rust-toolchain", "1.92.0", t(10));
+
+        let scan = find_marker_files(
+            &fake,
+            &[PathBuf::from("~/dev")],
+            &["rust-toolchain"],
+            &[],
+            &opts_with_depth(1),
+        );
+
+        // `a` was read (its pin found) but `a/b` was not descended; `leaf` has
+        // no subdirectories, so stopping there missed nothing.
+        assert_eq!(scan.marked.len(), 2);
+        assert_eq!(scan.too_deep, vec![PathBuf::from("/home/tester/dev/a")]);
     }
 }

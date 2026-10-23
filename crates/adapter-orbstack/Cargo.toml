@@ -1,0 +1,28 @@
+[package]
+name = "disk-saver-adapter-orbstack"
+description = "disk-saver adapter for OrbStack disk-image space Docker no longer accounts for."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+disk-saver-core.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+bytesize.workspace = true
+humantime.workspace = true
+humantime-serde.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# `decision-log` so the tests can read back the reasons `why` would show.
+disk-saver-core = { workspace = true, features = ["decision-log"] }
+disk-saver-platform = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true
+toml.workspace = true
+
+[lints]
+workspace = true

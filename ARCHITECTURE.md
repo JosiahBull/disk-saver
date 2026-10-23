@@ -157,6 +157,11 @@ crates/
   adapter-uv/              package: disk-saver-adapter-uv              (native cache maintenance)
   adapter-npm/             package: disk-saver-adapter-npm             (native cache maintenance)
   adapter-homebrew/        package: disk-saver-adapter-homebrew        (completed downloads)
+  adapter-orbstack/        package: disk-saver-adapter-orbstack        (VM disk-image gap)
+  adapter-rustup/          package: disk-saver-adapter-rustup          (on scan: project pins)
+  adapter-cachedir-tag/    package: disk-saver-adapter-cachedir-tag    (on scan)
+  adapter-orphaned-worktree/ package: disk-saver-adapter-orphaned-worktree (on scan)
+  adapter-app-temp/        package: disk-saver-adapter-app-temp        (on cachedir helpers)
 ```
 
 Two of those are shaped unlike the rest. `cachedir` is a second shared engine alongside
@@ -183,7 +188,10 @@ cli ─► every adapter ─► core ─► kv
 - `scan` holds the walker shared by the filesystem adapters (node_modules / rust target /
   python caches are the same problem with different markers), plus the `FsConfig` those
   adapters share for root resolution, the built-in denylist and the retention thresholds.
-  The two git adapters reuse it with a `.git` rule.
+  The two git adapters reuse it with a `.git` rule. Two smaller walks share its guardrails:
+  `find_dirs` for directories recognised by a predicate (it also offers dot-named ones), and
+  `find_marker_files` for pin files with their project's activity, which reports where it
+  could not look.
 - `cachedir` holds the whole lifecycle for a global cache directory — config, age, size,
   eligibility, deletion, decision records — so a cache adapter is a name and a resolver.
 - `cli` is thin: argument parsing, logging setup, config loading, the static adapter
@@ -198,7 +206,8 @@ The CLI exposes one cargo feature per adapter (all on by default), plus `decisio
 default = [
     "docker", "node-modules", "rust-target", "python-cache", "trash",
     "pnpm", "cargo-registry", "pip", "git-gc", "git-ignored",
-    "nvm", "uv", "npm", "homebrew", "decision-log",
+    "nvm", "uv", "npm", "homebrew", "orbstack", "rustup",
+    "cachedir-tag", "orphaned-worktree", "app-temp", "decision-log",
 ]
 docker       = ["dep:disk-saver-adapter-docker"]
 decision-log = ["disk-saver-core/decision-log"]
@@ -831,10 +840,13 @@ For a tool whose job is deleting files unattended, paranoia is a feature:
 
 ## 12. Adapters
 
-Ten of them ship, in four families: docker (§12.1) stands alone on KV-tracked usage; five
-walk `roots` on `disk-saver-scan` looking for a marker (§12.2–12.4, §12.7–12.8); three prune
-a global cache directory on `disk-saver-cachedir` (§12.6); and trash (§12.5) is its own
-cross-platform case. Numbering follows the order they were built, not the order the engine
+Ten of them shipped first, in four families: docker (§12.1) stands alone on KV-tracked
+usage; five walk `roots` on `disk-saver-scan` looking for a marker (§12.2–12.4, §12.7–12.8);
+three prune a global cache directory on `disk-saver-cachedir` (§12.6); and trash (§12.5) is
+its own cross-platform case. The ones added since follow the same shapes: the nvm, uv, npm
+and homebrew crates (§12.6) and `app-temp` (§12.11) on `cachedir`'s helpers, `cachedir-tag`
+(§12.10) and `orphaned-worktree` (§12.13) on `scan::find_dirs`, `rustup` (§12.12) on
+`scan::find_marker_files`, and `orbstack` (§12.9) on subprocesses and KV, like docker. Numbering follows the order they were built, not the order the engine
 runs them — that is by impact class (§8).
 
 Common shape: each crate exports `factory() -> AdapterFactory` built with
@@ -1080,6 +1092,135 @@ mtime, and a directory's mtime changes only when entries are added or removed. S
 everything they find, and this adapter skips anything at or under a claimed path, logging it
 as `kept` with the claimant's name. The registry plans `git-ignored` after them. Claims come
 only from adapters in the same run, so `plan --adapter git-ignored` alone runs without them.
+
+### 12.9 `orbstack` — disk-image space Docker no longer accounts for
+
+*The only adapter whose candidate is a whole runtime. Its one action, a reset, is never
+automatic.*
+
+OrbStack runs Docker inside a VM whose disk is a sparse file. Ordinary deletions inside the
+VM are handed back to the host within a minute, but data Docker no longer reports (leaked
+layers, snapshots) can stay allocated indefinitely: one image held 40.5 GB while
+`docker system df` accounted for 9.5 GB, and kept holding it after `docker` had pruned that
+to nothing. Only `orbctl reset` recovered it.
+
+| | |
+|---|---|
+| Availability | `orbctl status` must print `Running`, and the data image must exist. Never starts OrbStack to find out. Linux has no `orbctl` ⇒ `Unavailable` |
+| Observes | every run: the image's *allocated* size (`du -k`, since `Platform` sizes are apparent) minus what `docker system df` accounts for. A gap ≥ `min_gap` stamps `gap_since` in KV; a smaller one clears it, so a gap that is merely being reclaimed never ages |
+| Plans | one candidate, `orbstack-reset`, once the gap has persisted past policy — and only with no Linux machines, containers, volumes (§20.4) or Kubernetes. Every blocker is recorded as a kept decision |
+| Executes | re-checks availability, the gap and every guard (any change ⇒ `Skipped`), then `orbctl reset -y` and `orbctl start`, so OrbStack is left running |
+| Class | **Cache** — images are re-pullable (locally built ones must be rebuilt) |
+| Confirmation | always; `confirm = false` is a config error |
+| Defaults | `min_gap = "10GB"`, `max_age = "3d"`, `min_age = "1d"`, `docker_context = "orbstack"` |
+
+It drives `orbctl`, not `orb`: `orb` runs any word it does not recognise as a command inside a
+Linux machine. Every `docker` call names the `orbstack` context, so a different current
+context (Docker Desktop, colima) can never be the engine whose emptiness approves a reset.
+The candidate id never changes, so answering **Never** in `review` declines resets for good.
+
+### 12.10 `cachedir-tag` — tagged caches outside any project
+
+*The generic `CACHEDIR.TAG` sweeper from §21, scoped to explicit roots.*
+
+A `CACHEDIR.TAG` is a tool's promise that a directory is regenerable cache. The project
+adapters cannot see a cache living outside a project — a cargo target dir under
+`CARGO_TARGET_DIR=~/.cache/foo` has no `Cargo.toml` beside it, and the project walks never
+enter a dot-directory. This adapter walks `roots` (default `~/.cache`) with
+`scan::find_dirs` and proposes tagged directories nothing has written to for longer than
+policy.
+
+| | |
+|---|---|
+| Matches | a directory holding a `CACHEDIR.TAG` that starts with the spec's signature; never a configured root itself, never one inside another match |
+| Keeps | anything claimed by an earlier adapter, Python virtualenvs (`pyvenv.cfg` — §20.3), caches made by a tool in `skip_creators` (default `["uv"]`, which the `uv` adapter maintains under uv's own lock), and home or its ancestors |
+| Age | newest mtime of the directory, its children and grandchildren — where cargo shows a build — never access times |
+| Class | **Cache** |
+| Defaults | `roots = ["~/.cache"]`, `max_depth = 3`, `max_age = "30d"`, `min_age = "1d"`, `confirm = false` |
+
+The creator comes from the tag's comment (`… created by cargo.`). uv writes a bare signature,
+so a directory holding uv's versioned buckets (`archive-v0`, `wheels-v7`, …) counts as uv's.
+Roots are not resolved through `FsConfig::resolve_walk`, because on Linux the user cache dir
+*is* `~/.cache` and sits on that denylist; `~/Library` and the trash stay excluded.
+
+### 12.11 `app-temp` — app-sandbox temp folders (macOS)
+
+*A UserData adapter: a temp file may be someone's only copy of a download.*
+
+macOS sweeps the per-user `$TMPDIR`, but nothing cleans
+`~/Library/Containers/<bundle-id>/Data/tmp`. An 8.6 GB installer sent through Messages sat in
+one for eight months. On Linux the containers directory does not exist, which is simply
+nothing to do.
+
+| | |
+|---|---|
+| Units | each child of `tmp`; each child of `tmp/TemporaryItems` (a staging dir) instead of it; and in `TemporaryItems/<bundle-id>`, each child of each directory (Messages keeps one directory per attachment there, and something arrives most days) |
+| Age | newest modification or access time anywhere in the unit (`cachedir::safety::activity`); unknown ⇒ never proposed |
+| Candidates | one per container, so `review` asks about a thousand cached files once: the old units' total size, labelled with the largest |
+| Executes | recomputes the units and removes only those no newer than the approved `last_used`; if they now total more than approved, skips and re-asks |
+| Permissions | an unlistable containers dir, or every temp folder refused ⇒ `Unavailable` with the Full Disk Access hint, as `trash` |
+| Class | **UserData** |
+| Defaults | `max_age = "30d"`, `min_age = "7d"`, `confirm = true`, `exclude_bundles = []` |
+
+All the walking happens in `plan`, which returns at once when pressure is comfortable: every
+look inside another app's container is an access attempt macOS privacy protection may log or
+refuse, so a comfortable run makes none.
+
+### 12.12 `rustup` — toolchains no active project needs
+
+*nvm retirement (§12.6) for Rust, with one twist: a pin protects only while its project is in
+use.*
+
+Every `rust-toolchain` bump leaves the previous toolchain (~1.2 GB) installed. A pin in a
+project nobody has edited for `pin_max_idle` no longer protects anything: if work resumes,
+the toolchain is one download away.
+
+| | |
+|---|---|
+| Finds rustup | config `rustup`, then `$CARGO_HOME/bin/rustup`, then `~/.cargo/bin/rustup` — never `PATH`, which under launchd does not include `~/.cargo/bin`. Toolchains live in `$RUSTUP_HOME` or `~/.rustup`; the host triple comes from `rustup show` |
+| Protects | the default toolchain; exactly `stable-<host>`, `beta-<host>`, `nightly-<host>` (they track a channel, so are never old); `[overrides]` whose directory exists; linked toolchains; pins from `rust-toolchain(.toml)` files under `roots` whose project was active within `pin_max_idle` |
+| Pins | found with `scan::find_marker_files`, which reports symlinked pins and pins in `.disk-saver-keep` projects (a sentinel stops deletion, not protection). An unreadable pin in an active project stops the run. Folders the walk could not read (a launchd job cannot read `~/Documents` without Full Disk Access) make every candidate that run require approval, with a note in the label |
+| Age | newest access/modification time in `<toolchain>/bin`, as nvm; unknown ⇒ never proposed; open in a process (`lsof`) ⇒ never proposed |
+| Executes | re-surveys and re-walks pins, skips anything now protected or used since planning, then `rustup toolchain uninstall` |
+| Class | **Cache** — re-downloadable; cargo-installed binaries live in `~/.cargo/bin`, not the toolchain |
+| Defaults | `roots = ["~"]`, `max_age = "30d"`, `min_age = "7d"`, `pin_max_idle = "30d"`, `confirm = true` |
+
+A toolchain for a foreign host (`x86_64-unknown-linux-gnu` on a Mac — a container sharing
+`~/.rustup` installs these) goes through the same age policy, since that container may still
+use it, but its label says it cannot run on this machine. Labels carry absolute dates, so an
+item's label is stable from run to run.
+
+### 12.13 `orphaned-worktree` — checkouts their repository has forgotten
+
+*The only adapter that inspects content before asking.*
+
+A linked worktree's `.git` is a file naming `<repo>/.git/worktrees/<name>`. Once that admin
+directory is pruned, every git command in the checkout fails, nothing ever cleans it up, and
+it often holds a full build. Agents create worktrees constantly — and park them in dot-named
+directories like `.wt-feature` — so these accumulate.
+
+| | |
+|---|---|
+| Discovers | `scan::find_dirs` under `roots`, which offers dot-named directories to the matcher: a `.git` file whose gitdir's parent is `worktrees` and which no longer exists. Submodule gitfiles never match |
+| Never touches | anything under `.claude`, `.codex` or `~/Documents/Codex` (agents manage their own worktrees), a checkout containing a non-empty agent worktree dir, one the repository still lists under another admin dir, one containing a still-registered worktree, anything another adapter claimed |
+| Evidence | when the repository still exists, one `sh` script (paths as positional arguments) counts the non-ignored files whose content is not in its object store; see below |
+| Candidate | the checkout, labelled with its repository and the evidence: `3 files not in git (…)`, `every non-ignored file's content is in git`, or `couldn't check for unsaved work: <reason>` |
+| Executes | re-validates everything, re-runs the evidence, and removes only if every file unsaved now was unsaved, unchanged, when planned |
+| Class | **UserData** |
+| Confirmation | forced unless `confirm = false` *and* the evidence came back clean |
+| Defaults | `roots = ["~"]`, `max_age = "14d"`, `min_age = "3d"`, `confirm = true` |
+
+The evidence script lists files with an empty index (a nonexistent `GIT_INDEX_FILE`), so every
+non-ignored file counts as untracked, and hashes their raw bytes against the object store. It
+re-checks only the misses through git's filters, and computes Git LFS pointers itself: running
+the LFS clean filter would copy every matching file into `.git/lfs/objects`, which is not a
+side effect a janitor can have under disk pressure. Every step writes to a temp file and checks
+its status, so a full disk cannot truncate a list into a false "clean". About 15 s for a
+35,000-file monorepo checkout, so it runs only for checkouts already past the age policy.
+
+Ignored files are not checked (a unique `.env` goes with the checkout), and "in the object
+store" is not "reachable": a blob only ever staged can still be garbage-collected later. The
+approval prompt is where a human weighs that; the label gives them what they need.
 
 ---
 
@@ -1411,5 +1552,5 @@ In rough priority order: Homebrew
 (`brew cleanup` + cache), Xcode `DerivedData`, npm/yarn global stores, sccache, `uv`
 global cache, Go module/build cache (`~/go/pkg/mod`, `go clean -cache`), container image
 stores for podman/nerdctl, JetBrains/VS Code caches, `journalctl --vacuum-size` (Linux),
-old kernels/apt/dnf caches (Linux, needs root story), generic `CACHEDIR.TAG` sweeper, and
+old kernels/apt/dnf caches (Linux, needs root story), and
 an opt-in `~/Downloads` adapter (UserData class, `confirm = true` always, long ages).

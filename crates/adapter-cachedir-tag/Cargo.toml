@@ -1,0 +1,24 @@
+[package]
+name = "disk-saver-adapter-cachedir-tag"
+description = "disk-saver adapter for directories marked with a CACHEDIR.TAG."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+disk-saver-core.workspace = true
+disk-saver-scan.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+globset.workspace = true
+humantime.workspace = true
+humantime-serde.workspace = true
+
+[dev-dependencies]
+disk-saver-platform = { workspace = true, features = ["test-util"] }
+toml.workspace = true
+
+[lints]
+workspace = true
