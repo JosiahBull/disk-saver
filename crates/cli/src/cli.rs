@@ -19,7 +19,7 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
-    /// Raise the logging verbosity (INFO → DEBUG).
+    /// Raise the logging verbosity (WARN → DEBUG).
     #[arg(long, short, global = true)]
     pub verbose: bool,
 

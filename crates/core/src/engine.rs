@@ -970,6 +970,8 @@ fn apply_outcomes(
             for o in &outcomes {
                 match o {
                     Outcome::Removed { id, bytes } => {
+                        tracing::info!(adapter = %run.name, %id, bytes = %human_bytes(*bytes),
+                            "deleted");
                         run.report.removed += 1;
                         run.report.bytes_removed = run.report.bytes_removed.saturating_add(*bytes);
                         decisions.record(
@@ -989,6 +991,7 @@ fn apply_outcomes(
                         );
                     }
                     Outcome::Failed { id, error } => {
+                        tracing::warn!(adapter = %run.name, %id, %error, "delete failed");
                         run.report.failed += 1;
                         decisions.record(
                             now,

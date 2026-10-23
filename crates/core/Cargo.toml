@@ -20,11 +20,13 @@ humantime.workspace = true
 humantime-serde.workspace = true
 bytesize.workspace = true
 globset.workspace = true
+rusqlite = { workspace = true, optional = true }
 
 [features]
-# When on, decisions are recorded to <state_dir>/decisions.jsonl and `why` works.
-# When off, DecisionLog is a ZST with inlined no-op methods (call sites unchanged).
-decision-log = []
+# When on, decisions are recorded to the sqlite database <state_dir>/decisions.db
+# and `why` works. When off, DecisionLog is a ZST with inlined no-op methods (call
+# sites unchanged) and sqlite is not linked by this crate.
+decision-log = ["dep:rusqlite"]
 
 [dev-dependencies]
 disk-saver-platform = { workspace = true, features = ["test-util"] }

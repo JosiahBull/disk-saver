@@ -56,25 +56,59 @@ impl App {
         Store::open(&path).with_context(|| format!("opening KV store at {}", path.display()))
     }
 
-    /// Open the decision log. With the `decision-log` feature it appends to
-    /// `<state_dir>/decisions.jsonl` (falling back to disabled on I/O error);
+    /// Open the decision log. With the `decision-log` feature it records to
+    /// `<state_dir>/decisions.db` (falling back to disabled on I/O error),
+    /// importing a legacy `decisions.jsonl` once and pruning old decisions;
     /// without it, it is a zero-cost no-op.
+    ///
+    /// Callers hold the single-instance lock, so the import runs exactly once.
     pub fn open_decisions(&self) -> DecisionLog {
         #[cfg(feature = "decision-log")]
         {
-            let path = self.state_dir.join("decisions.jsonl");
-            match DecisionLog::to_path(path.clone()) {
+            let path = self.state_dir.join("decisions.db");
+            let log = match DecisionLog::open(&path) {
                 Ok(log) => log,
                 Err(e) => {
                     tracing::warn!(path = %path.display(), error = %e,
                         "could not open decision log; decisions will not be recorded");
-                    DecisionLog::disabled()
+                    return DecisionLog::disabled();
                 }
+            };
+            self.import_legacy_decisions(&log);
+            if let Err(e) = log.prune(self.platform.now()) {
+                tracing::warn!(path = %path.display(), error = %e,
+                    "could not prune decision log");
             }
+            log
         }
         #[cfg(not(feature = "decision-log"))]
         {
             DecisionLog::disabled()
+        }
+    }
+
+    /// Move a `decisions.jsonl` left by a release before the log moved to sqlite
+    /// into `log`, then delete it. On a failed import the file stays for the next
+    /// run to retry.
+    #[cfg(feature = "decision-log")]
+    fn import_legacy_decisions(&self, log: &DecisionLog) {
+        let legacy = self.state_dir.join("decisions.jsonl");
+        if !legacy.exists() {
+            return;
+        }
+        match log.import_jsonl(&legacy) {
+            Ok(imported) => {
+                tracing::info!(path = %legacy.display(), imported,
+                    "moved legacy decision log into decisions.db");
+                if let Err(e) = std::fs::remove_file(&legacy) {
+                    tracing::warn!(path = %legacy.display(), error = %e,
+                        "could not remove imported legacy decision log");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(path = %legacy.display(), error = %e,
+                    "could not import legacy decision log; leaving it in place");
+            }
         }
     }
 

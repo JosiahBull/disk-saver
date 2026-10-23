@@ -251,29 +251,43 @@ fn schedule_install_writes_a_unit_then_status_reports_it() {
 
 #[cfg(feature = "decision-log")]
 #[test]
-fn why_reports_matching_decisions() {
-    use std::io::Write;
-
+fn why_reports_decisions_imported_from_a_legacy_jsonl_log() {
     let home = TempDir::new().unwrap();
     let state = home.path().join("state");
     let config = write_config(home.path(), &state);
     std::fs::create_dir_all(&state).unwrap();
 
-    // Seed one decision-log line mentioning a searchable id.
-    let mut f = std::fs::File::create(state.join("decisions.jsonl")).unwrap();
-    writeln!(
-        f,
-        "{{\"at_unix\":100,\"pressure\":\"normal\",\"kind\":\"deleted\",\"adapter\":\"rust-target\",\"id\":\"/proj/target\",\"label\":\"cargo target\",\"bytes\":4096,\"age_secs\":900000,\"reason\":null}}"
+    // A `decisions.jsonl` left by an older release: one recent decision, and one
+    // from 1970 that is far past retention.
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let legacy = state.join("decisions.jsonl");
+    std::fs::write(
+        &legacy,
+        format!(
+            "{{\"at_unix\":{now},\"pressure\":\"normal\",\"kind\":\"deleted\",\"adapter\":\"rust-target\",\"id\":\"/proj/target\",\"label\":\"cargo target\",\"bytes\":4096,\"age_secs\":900000,\"reason\":null}}\n\
+             {{\"at_unix\":100,\"pressure\":\"normal\",\"kind\":\"deleted\",\"adapter\":\"rust-target\",\"id\":\"/ancient/target\",\"label\":\"cargo target\",\"bytes\":1,\"age_secs\":1,\"reason\":null}}\n"
+        ),
     )
     .unwrap();
-    drop(f);
+
+    // Any command that opens the decision log moves the legacy file into sqlite.
+    cmd(home.path(), &config)
+        .args(["plan", "--pressure", "normal"])
+        .assert()
+        .success();
+    assert!(!legacy.exists(), "the imported jsonl must be removed");
+    assert!(state.join("decisions.db").exists());
 
     cmd(home.path(), &config)
         .args(["why", "target"])
         .assert()
         .success()
         .stdout(predicate::str::contains("deleted"))
-        .stdout(predicate::str::contains("/proj/target"));
+        .stdout(predicate::str::contains("/proj/target"))
+        .stdout(predicate::str::contains("/ancient/target").not());
 
     // A non-matching query yields a clean "no decisions" message.
     cmd(home.path(), &config)
