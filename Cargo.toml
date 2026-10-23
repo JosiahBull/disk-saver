@@ -11,7 +11,7 @@ default-members = ["crates/cli"]
 edition = "2024"
 
 rust-version = "1.88"
-version = "0.3.1"
+version = "0.4.0"
 license = "MIT"
 repository = "https://github.com/JosiahBull/disk-saver"
 
@@ -19,33 +19,33 @@ repository = "https://github.com/JosiahBull/disk-saver"
 # `some-dep.workspace = true` so versions stay in sync across the workspace.
 [workspace.dependencies]
 # ── internal crates ──
-disk-saver-core = { path = "crates/core", version = "0.3.1" }
-disk-saver-kv = { path = "crates/kv", version = "0.3.1" }
-disk-saver-platform = { path = "crates/platform", version = "0.3.1" }
-disk-saver-scan = { path = "crates/scan", version = "0.3.1" }
-disk-saver-cachedir = { path = "crates/cachedir", version = "0.3.1" }
-disk-saver-adapter-docker = { path = "crates/adapter-docker", version = "0.3.1" }
-disk-saver-adapter-pnpm = { path = "crates/adapter-pnpm", version = "0.3.1" }
-disk-saver-adapter-cargo-registry = { path = "crates/adapter-cargo-registry", version = "0.3.1" }
-disk-saver-adapter-pip = { path = "crates/adapter-pip", version = "0.3.1" }
-disk-saver-adapter-git-gc = { path = "crates/adapter-git-gc", version = "0.3.1" }
-disk-saver-adapter-git-ignored = { path = "crates/adapter-git-ignored", version = "0.3.1" }
-disk-saver-installer = { path = "crates/installer", version = "0.3.1" }
-disk-saver-adapter-node-modules = { path = "crates/adapter-node-modules", version = "0.3.1" }
-disk-saver-adapter-rust-target = { path = "crates/adapter-rust-target", version = "0.3.1" }
-disk-saver-adapter-python-cache = { path = "crates/adapter-python-cache", version = "0.3.1" }
-disk-saver-adapter-trash = { path = "crates/adapter-trash", version = "0.3.1" }
+disk-saver-core = { path = "crates/core", version = "0.4.0" }
+disk-saver-kv = { path = "crates/kv", version = "0.4.0" }
+disk-saver-platform = { path = "crates/platform", version = "0.4.0" }
+disk-saver-scan = { path = "crates/scan", version = "0.4.0" }
+disk-saver-cachedir = { path = "crates/cachedir", version = "0.4.0" }
+disk-saver-adapter-docker = { path = "crates/adapter-docker", version = "0.4.0" }
+disk-saver-adapter-pnpm = { path = "crates/adapter-pnpm", version = "0.4.0" }
+disk-saver-adapter-cargo-registry = { path = "crates/adapter-cargo-registry", version = "0.4.0" }
+disk-saver-adapter-pip = { path = "crates/adapter-pip", version = "0.4.0" }
+disk-saver-adapter-git-gc = { path = "crates/adapter-git-gc", version = "0.4.0" }
+disk-saver-adapter-git-ignored = { path = "crates/adapter-git-ignored", version = "0.4.0" }
+disk-saver-installer = { path = "crates/installer", version = "0.4.0" }
+disk-saver-adapter-node-modules = { path = "crates/adapter-node-modules", version = "0.4.0" }
+disk-saver-adapter-rust-target = { path = "crates/adapter-rust-target", version = "0.4.0" }
+disk-saver-adapter-python-cache = { path = "crates/adapter-python-cache", version = "0.4.0" }
+disk-saver-adapter-trash = { path = "crates/adapter-trash", version = "0.4.0" }
 
-disk-saver-adapter-nvm = { path = "crates/adapter-nvm", version = "0.3.1" }
-disk-saver-adapter-uv = { path = "crates/adapter-uv", version = "0.3.1" }
-disk-saver-adapter-npm = { path = "crates/adapter-npm", version = "0.3.1" }
-disk-saver-adapter-homebrew = { path = "crates/adapter-homebrew", version = "0.3.1" }
+disk-saver-adapter-nvm = { path = "crates/adapter-nvm", version = "0.4.0" }
+disk-saver-adapter-uv = { path = "crates/adapter-uv", version = "0.4.0" }
+disk-saver-adapter-npm = { path = "crates/adapter-npm", version = "0.4.0" }
+disk-saver-adapter-homebrew = { path = "crates/adapter-homebrew", version = "0.4.0" }
 
-disk-saver-adapter-orbstack = { path = "crates/adapter-orbstack", version = "0.3.1" }
-disk-saver-adapter-rustup = { path = "crates/adapter-rustup", version = "0.3.1" }
-disk-saver-adapter-cachedir-tag = { path = "crates/adapter-cachedir-tag", version = "0.3.1" }
-disk-saver-adapter-orphaned-worktree = { path = "crates/adapter-orphaned-worktree", version = "0.3.1" }
-disk-saver-adapter-app-temp = { path = "crates/adapter-app-temp", version = "0.3.1" }
+disk-saver-adapter-orbstack = { path = "crates/adapter-orbstack", version = "0.4.0" }
+disk-saver-adapter-rustup = { path = "crates/adapter-rustup", version = "0.4.0" }
+disk-saver-adapter-cachedir-tag = { path = "crates/adapter-cachedir-tag", version = "0.4.0" }
+disk-saver-adapter-orphaned-worktree = { path = "crates/adapter-orphaned-worktree", version = "0.4.0" }
+disk-saver-adapter-app-temp = { path = "crates/adapter-app-temp", version = "0.4.0" }
 
 # ── external ──
 anyhow = "1"
