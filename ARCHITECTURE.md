@@ -1172,19 +1172,26 @@ and speak up *before* doing something dramatic.
 ### 15.1 Operational logging (always compiled)
 
 `tracing`. Interactive: pretty stderr. Scheduled: daily-rotated files in
-`<state_dir>/logs/` (keep ~14 days). One INFO line per deletion, one summary line per
-run (including throttled exits at DEBUG). This layer is for "is it healthy?".
+`<state_dir>/logs/`; each run deletes all but the newest 14 as it opens the log. One INFO
+line per deleted item, one summary line per run (including throttled exits at DEBUG).
+The individual files and directories inside a deleted tree are logged at TRACE only — a
+single `node_modules` is hundreds of thousands of entries, and logging each at INFO once
+grew this directory by hundreds of megabytes a day. This layer is for "is it healthy?".
 
 ### 15.2 Decision records (cargo feature `decision-log`, default **on**)
 
 The "when/why" audit layer, compiled fully in or out:
 
-- **On:** every candidate-affecting decision is appended as one JSON line to
-  `<state_dir>/decisions.jsonl` (size-capped, rotated):
+- **On:** every candidate-affecting decision is recorded as one row in the sqlite
+  database `<state_dir>/decisions.db`. An item's adapter, id and label are stored once
+  and each decision refers to them, because most rows are the same items re-recorded as
+  kept, planned or queued on every run. Decisions older than 90 days, and the oldest
+  beyond 200,000 rows, are pruned whenever `run` or `review` opens the log. A
+  `decisions.jsonl` left by an earlier release is imported once and deleted. Kinds:
   `observed`, `kept { reason: "age 3d < min_age 7d" }`, `planned`,
   `queued_for_confirmation`, `approved { by: "review" }`, `denied`, `snoozed`,
   `deleted { bytes }`, `skipped`, `failed` — each with timestamp, adapter, id, size,
-  age, and the pressure at the time. `disk-saver why <item>` greps and renders an
+  age, and the pressure at the time. `disk-saver why <item>` searches and renders an
   item's timeline. This is the layer that answers "where did my node_modules go, and
   why did it think that was OK?"
 - **Off (`--no-default-features …`):** `DecisionLog` compiles to a zero-sized struct

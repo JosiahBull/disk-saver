@@ -1,7 +1,7 @@
 //! `why <query>` — replay every recorded decision about an item (§15.2).
 //!
 //! Only compiled with the `decision-log` feature. Reads
-//! `<state_dir>/decisions.jsonl`, filters to records whose id or label contains
+//! `<state_dir>/decisions.db`, filters to records whose id or label contains
 //! the query (case-insensitive), and renders them as a chronological timeline.
 
 use std::time::{Duration, UNIX_EPOCH};
@@ -39,7 +39,7 @@ struct WhyEntry {
 
 /// Run the `why` command for `query`.
 pub fn run(app: &App, query: &str) -> Result<u8> {
-    let path = app.state_dir.join("decisions.jsonl");
+    let path = app.state_dir.join("decisions.db");
     let records = match read_decisions(&path) {
         Ok(records) => records,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -55,7 +55,7 @@ pub fn run(app: &App, query: &str) -> Result<u8> {
             r.id.to_lowercase().contains(&needle) || r.label.to_lowercase().contains(&needle)
         })
         .collect();
-    // Chronological: the log is append-order, but sort defensively.
+    // Chronological: `read_decisions` already orders by time, but sort defensively.
     matches.sort_by_key(|r| r.at_unix);
 
     if app.json {
@@ -64,7 +64,7 @@ pub fn run(app: &App, query: &str) -> Result<u8> {
             .map(|r| WhyEntry {
                 at_unix: r.at_unix,
                 pressure: r.pressure.clone(),
-                kind: kind_str(r.kind),
+                kind: r.kind.as_str().to_owned(),
                 adapter: r.adapter.clone(),
                 id: r.id.clone(),
                 label: r.label.clone(),
@@ -87,7 +87,7 @@ pub fn run(app: &App, query: &str) -> Result<u8> {
         let stamp = humantime::format_rfc3339_seconds(UNIX_EPOCH + Duration::from_secs(r.at_unix));
         print!(
             "  {stamp}  {:<9}  {:<12}  {}  {}",
-            kind_str(r.kind),
+            r.kind.as_str(),
             r.adapter,
             output::bytes(r.bytes),
             r.id,
@@ -98,22 +98,4 @@ pub fn run(app: &App, query: &str) -> Result<u8> {
         println!("  [{}]", r.pressure);
     }
     Ok(0)
-}
-
-/// The snake_case wire name of a decision kind.
-fn kind_str(k: disk_saver_core::DecisionKind) -> String {
-    use disk_saver_core::DecisionKind as K;
-    match k {
-        K::Observed => "observed",
-        K::Kept => "kept",
-        K::Planned => "planned",
-        K::Queued => "queued",
-        K::Approved => "approved",
-        K::Denied => "denied",
-        K::Snoozed => "snoozed",
-        K::Deleted => "deleted",
-        K::Skipped => "skipped",
-        K::Failed => "failed",
-    }
-    .to_owned()
 }

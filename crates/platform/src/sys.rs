@@ -150,12 +150,15 @@ pub(crate) fn dir_size(path: &Path) -> io::Result<u64> {
 /// be catastrophic data loss (ARCHITECTURE.md §11.8), so we skip it. Leaving a
 /// cross-device child in place makes the parent `remove_dir` fail with `ENOTEMPTY`,
 /// which the caller reports as a failure — the safe outcome.
+///
+/// The per-entry lines are TRACE: one `node_modules` is hundreds of thousands of
+/// entries, and the engine already logs one INFO line per deleted item (§15.1).
 fn remove_tree(path: &Path, dev: u64) -> io::Result<()> {
     let md = fs::symlink_metadata(path)?;
     let ft = md.file_type();
 
     if ft.is_symlink() {
-        tracing::info!(path = %path.display(), "disk-saver: removing symlink");
+        tracing::trace!(path = %path.display(), "disk-saver: removing symlink");
         return fs::remove_file(path);
     }
 
@@ -173,18 +176,18 @@ fn remove_tree(path: &Path, dev: u64) -> io::Result<()> {
             }
             remove_tree(&child, dev)?;
         }
-        tracing::info!(path = %path.display(), "disk-saver: removing directory");
+        tracing::trace!(path = %path.display(), "disk-saver: removing directory");
         return fs::remove_dir(path);
     }
 
-    tracing::info!(path = %path.display(), "disk-saver: removing file");
+    tracing::trace!(path = %path.display(), "disk-saver: removing file");
     fs::remove_file(path)
 }
 
 /// Remove a single file (or unlink a single symlink). Refuses relative paths.
 pub(crate) fn remove_file(path: &Path) -> io::Result<()> {
     ensure_absolute(path)?;
-    tracing::info!(path = %path.display(), "disk-saver: removing file");
+    tracing::trace!(path = %path.display(), "disk-saver: removing file");
     fs::remove_file(path)
 }
 

@@ -693,6 +693,7 @@ dependencies = [
  "globset",
  "humantime",
  "humantime-serde",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
