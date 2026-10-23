@@ -1172,11 +1172,14 @@ and speak up *before* doing something dramatic.
 ### 15.1 Operational logging (always compiled)
 
 `tracing`. Interactive: pretty stderr. Scheduled: daily-rotated files in
-`<state_dir>/logs/`; each run deletes all but the newest 14 as it opens the log. One INFO
-line per deleted item, one summary line per run (including throttled exits at DEBUG).
-The individual files and directories inside a deleted tree are logged at TRACE only — a
-single `node_modules` is hundreds of thousands of entries, and logging each at INFO once
-grew this directory by hundreds of megabytes a day. This layer is for "is it healthy?".
+`<state_dir>/logs/`; each run deletes all but the newest 14 as it opens the log. The
+default level is WARN, so a healthy run writes nothing and the logs hold only what needs
+attention; `--verbose` raises it to DEBUG and `RUST_LOG` overrides both. At INFO there is
+one line per deleted item and one summary line per run (including throttled exits at
+DEBUG). The individual files and directories inside a deleted tree are logged at TRACE
+only — a single `node_modules` is hundreds of thousands of entries, and logging each at
+INFO once grew this directory by hundreds of megabytes a day. This layer is for "is it
+healthy?"; what was deleted, and why, is the decision record's job (§15.2).
 
 ### 15.2 Decision records (cargo feature `decision-log`, default **on**)
 

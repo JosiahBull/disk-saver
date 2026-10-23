@@ -6,8 +6,9 @@
 //! the newest [`LOG_FILES_KEPT`] files are kept; older ones are deleted as each
 //! run opens the log.
 //!
-//! Verbosity: default `INFO`; `--verbose` raises it to `DEBUG`. `RUST_LOG`, if
-//! set, overrides both.
+//! Verbosity: default `WARN`, so a healthy run writes nothing; `--verbose` raises
+//! it to `DEBUG`. `RUST_LOG`, if set, overrides both (`RUST_LOG=info` shows one
+//! line per deleted item).
 
 use std::io::IsTerminal;
 use std::path::Path;
@@ -21,7 +22,7 @@ const LOG_FILES_KEPT: usize = 14;
 
 /// Build the level filter from `RUST_LOG`, or a default keyed off `--verbose`.
 fn env_filter(verbose: bool) -> EnvFilter {
-    let default = if verbose { "debug" } else { "info" };
+    let default = if verbose { "debug" } else { "warn" };
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default))
 }
 
