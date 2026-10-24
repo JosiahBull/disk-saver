@@ -90,7 +90,7 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           key: ${{ matrix.target }}
 
@@ -99,7 +99,7 @@ jobs:
       # SQLite from C source.
       - name: Install cross
         if: matrix.command == 'cross'
-        uses: taiki-e/install-action@v2.87.28
+        uses: taiki-e/install-action@v2.87.30
         with:
           tool: cross
 
