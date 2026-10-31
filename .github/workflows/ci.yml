@@ -220,7 +220,7 @@ jobs:
 
       # A published binary rather than `cargo install`, which would rebuild it from source on
       # every run.
-      - uses: taiki-e/install-action@v2.87.30
+      - uses: taiki-e/install-action@v2.88.0
         with:
           tool: cargo-autoinherit@0.1.6
 
@@ -250,7 +250,7 @@ jobs:
           cache-all-crates: true
           cache-bin: true
 
-      - uses: taiki-e/install-action@v2.87.30
+      - uses: taiki-e/install-action@v2.88.0
         with:
           tool: cargo-udeps
 
