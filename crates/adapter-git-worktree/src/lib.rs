@@ -1,5 +1,5 @@
-//! `disk-saver-adapter-orphaned-worktree` — linked git worktrees whose
-//! repository has forgotten them.
+//! `disk-saver-adapter-git-worktree` — linked git worktrees whose repository
+//! has forgotten them, or whose branch merged.
 //!
 //! `git worktree add` makes a checkout whose `.git` is a one-line *file*,
 //! `gitdir: <repo>/.git/worktrees/<name>`, pointing at an admin directory inside
@@ -10,37 +10,52 @@
 //! constantly, so these pile up; one sweep of `~/work` found 14 of them holding
 //! 43 GB, several dot-named (`.wt-prepare-latency`).
 //!
-//! An orphaned checkout can still hold the only copy of someone's work, so this
+//! A worktree its repository still lists is done with once its branch merges,
+//! and nothing removes it then either: the same sweep found 54 holding 78 GB.
+//! Whether a branch merged comes from its forge, asked by [`disk_saver_forge`];
+//! git alone cannot tell after a squash merge. A merged worktree is proposed
+//! once idle for `merged_age`, one whose MR or PR is open never, and any other
+//! once idle past the retention policy.
+//!
+//! A checkout can still hold the only copy of someone's work, so this
 //! adapter proposes and never disposes on its own say-so. Each candidate is
-//! [`Class::UserData`] and carries *evidence*: whether every file in it is
-//! already in the repository's object store. Without `confirm = false` every
-//! candidate waits for `disk-saver review`; with it, only checkouts whose
-//! evidence came back clean are removed automatically.
+//! [`Class::UserData`] and carries *evidence* of what removing it would lose.
+//! Without `confirm = false` every candidate waits for `disk-saver review`;
+//! with it, only forgotten or merged checkouts whose evidence came back clean
+//! are removed automatically.
 //!
 //! # Phases
 //!
-//! * **check / observe** — no-op. Age comes from the filesystem.
+//! * **check** — one forge lookup per host, for `disk-saver doctor`.
+//! * **observe** — no-op. Age comes from the filesystem.
 //! * **plan** — only under pressure. Walk the roots with
 //!   [`disk_saver_scan::find_dirs`], which offers dot-named directories too.
 //!   A directory matches when its `.git` file names a `<common>/worktrees/<name>`
 //!   admin directory that does not exist. A `.git` file pointing elsewhere (a
 //!   submodule's `.git/modules/<name>`) is not a worktree; one whose admin
-//!   directory exists is still registered and is only recorded as kept. Every
-//!   orphan found is [claimed](Ctx::claim), so `git-ignored` leaves it alone.
-//!   Orphans idle past the retention policy get the evidence check, and its
-//!   result is stored in KV against the path.
-//! * **execute** — repeat every check: still a real directory, still orphaned,
-//!   still not protected, and evidence no worse than what was proposed (see
-//!   `regression`). Then remove it and report the bytes measured just before.
+//!   directory exists names its repository, whose `worktrees/*/gitdir` list its
+//!   checkouts, even ones in `.claude/worktrees` the walk never enters. Every
+//!   orphan found is [claimed](Ctx::claim), so `git-ignored` leaves it alone;
+//!   a listed worktree is claimed when proposed. Worktrees idle past their
+//!   threshold get the evidence check, and its result is stored in KV against
+//!   the path.
+//! * **execute** — repeat every check: still a real directory, still forgotten
+//!   or listed as proposed, still not protected, and evidence no worse than
+//!   what was proposed (see `regression`). Then remove it, with a listed one's
+//!   admin directory, and report the bytes measured just before. The branch
+//!   stays.
 //!
 //! # The evidence check
 //!
-//! With the admin directory gone there is no index and no `HEAD`, so "what is
-//! uncommitted" has no answer. What can be answered is whether each file's
-//! *content* is in the repository's object store, which is what losing the
-//! checkout would cost. The check is one `sh` script (`EVIDENCE_SCRIPT`),
-//! given the checkout and `<common>` as positional arguments, never interpolated
-//! into the script:
+//! A listed worktree's evidence is `git status`: every staged, unstaged or
+//! untracked path, fingerprinted so `execute` can see one that changed after it
+//! was proposed. Git runs without optional locks, so the index is never
+//! rewritten; a rewritten index would read as activity. A detached HEAD on
+//! commits no branch, remote-tracking branch or tag holds keeps the worktree.
+//!
+//! A forgotten worktree has no index and no `HEAD`, so "what is uncommitted"
+//! has no answer. What can be answered is whether each file's *content* is in
+//! the repository's object store, which is what losing the checkout would cost:
 //!
 //! 1. Point git at the repository with an index file that does not exist. A
 //!    missing index reads as empty and these commands never write one, so every
@@ -52,15 +67,19 @@
 //! 3. Hash each file's raw bytes (`--no-filters`) and look the hashes up with
 //!    `git cat-file --batch-check`.
 //! 4. Re-check the misses the way git would store them. Files under a Git LFS
-//!    filter are hashed as their LFS pointer, which the script computes itself:
-//!    running git-lfs's clean filter would copy every untracked file matching
-//!    an LFS pattern into `.git/lfs/objects`, gigabytes of writes in a run that
-//!    exists because the disk is full. Other files go through `hash-object`
-//!    with the repository's filters, which covers line-ending conversion.
+//!    filter are hashed as their LFS pointer, computed here: running git-lfs's
+//!    clean filter would copy every untracked file matching an LFS pattern into
+//!    `.git/lfs/objects`, gigabytes of writes in a run that exists because the
+//!    disk is full. Other files go through `hash-object` with the repository's
+//!    filters, which covers line-ending conversion.
 //!
-//! Whatever is still missing is unsaved work. The script fails closed: any
+//! Whatever is still missing is unsaved work. Either check fails closed: any
 //! failing step, a count that does not line up, or a file name holding a
 //! newline makes the result unknown, which always needs a person.
+//!
+//! Checkouts of other repositories inside a candidate, such as an import a
+//! vendoring tool keeps there, go with it: each gets the status check, and its
+//! paths are reported under where it sits.
 //!
 //! What the check cannot see: ignored files (a local `.env` goes with the
 //! checkout), whether a blob is still *reachable* from a ref, and files inside a
@@ -70,54 +89,68 @@
 //!
 //! Never proposed or removed, whatever the config says:
 //!
-//! * anything under a `.claude` or `.codex` directory, or under `~/Documents/Codex`
-//!   (the Codex app's task workspace) — agent-managed worktrees;
+//! * anything under a `.codex` directory, or under `~/Documents/Codex` (the
+//!   Codex app's task workspace), and anything under a `.claude` directory
+//!   whose branch has not merged — agent-managed worktrees;
+//! * a worktree locked with `git worktree lock`;
+//! * a checkout inside another repository's work tree, such as an import a
+//!   vendoring tool checks out from a bare cache;
 //! * a checkout holding a non-empty `.claude/worktrees` or `.codex/worktrees`;
-//! * a checkout the repository still lists under another admin directory
-//!   (`git worktree repair` can relink it), or one containing a worktree the
-//!   repository still lists;
+//! * a forgotten checkout the repository still lists under another admin
+//!   directory (`git worktree repair` can relink it), or a checkout containing a
+//!   worktree the repository still lists;
 //! * anything another adapter claimed first.
 //!
 //! The shared walker supplies the `.disk-saver-keep` sentinel, the denylist, no
 //! symlink following, and staying on one filesystem.
 //!
-//! # Config (`[adapters.orphaned-worktree]`)
+//! # Config (`[adapters.git-worktree]`)
 //!
 //! | Key | Default | |
 //! |---|---|---|
 //! | `roots` | `["~"]` | directories to walk |
 //! | `exclude` | `[]` | absolute-path globs to skip |
 //! | `max_depth` | `8` | levels below each root |
-//! | `max_age` | `"14d"` | idle time before a checkout is proposed |
+//! | `merged_age` | `"1d"` | idle time before a worktree whose branch merged is proposed |
+//! | `max_age` | `"14d"` | idle time before any other worktree is proposed |
 //! | `min_age` | `"3d"` | floor under scavenge; lowers itself to a shorter `max_age` |
-//! | `confirm` | `true` | `false` removes checkouts with clean evidence without asking |
+//! | `confirm` | `true` | `false` removes forgotten checkouts with clean evidence and merged ones with nothing uncommitted without asking |
+//! | `forges` | `{}` | host → `"github"`, `"gitlab"` or `"none"`; `github.com`, `gitlab.com`, `github.*` and `gitlab.*` need no entry |
 
 #![forbid(unsafe_code)]
 
+mod checks;
+
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use disk_saver_core::{
-    Adapter, AdapterError, AdapterFactory, Candidate, Class, CommandOutput, CommandSpec, ConfigCx,
-    ConfigError, Configured, Ctx, Decision, DecisionKind, DecisionLog, FileKind, Outcome, Platform,
-    Pressure, RetentionPolicy,
+    Adapter, AdapterError, AdapterFactory, Candidate, Class, ConfigCx, ConfigError, Configured,
+    Ctx, Decision, DecisionKind, DecisionLog, FileKind, Outcome, Platform, Pressure,
+    RetentionPolicy,
 };
-use disk_saver_scan::{FsConfig, KEEP_SENTINEL, find_dirs};
+use disk_saver_forge::{self as forge, ForgeKind, ForgeState};
+use disk_saver_scan::{FsConfig, KEEP_SENTINEL, ScanOptions, find_dirs};
 use globset::GlobSet;
 use serde::{Deserialize, Serialize};
 
+use checks::{Check, Status, UNREACHABLE, embedded, evidence};
+
 /// The adapter's stable name (config section, KV bucket, log target).
-const NAME: &str = "orphaned-worktree";
+const NAME: &str = "git-worktree";
 
 /// Every candidate is somebody's checkout: gone is gone.
 const CLASS: Class = Class::UserData;
 
 const DAY: u64 = 24 * 60 * 60;
 
-/// Normal-mode threshold when the config names none.
+/// Threshold for a worktree whose branch merged when the config names none.
+const DEFAULT_MERGED_AGE: Duration = Duration::from_secs(DAY);
+
+/// Normal-mode threshold for every other worktree when the config names none.
 const DEFAULT_MAX_AGE: Duration = Duration::from_secs(14 * DAY);
 
 /// Scavenge floor when the config names none. Days rather than the hour the
@@ -125,8 +158,9 @@ const DEFAULT_MAX_AGE: Duration = Duration::from_secs(14 * DAY);
 /// something a rebuild restores.
 const DEFAULT_MIN_AGE: Duration = Duration::from_secs(3 * DAY);
 
-/// Directories where coding agents keep worktrees they manage. Nothing under
-/// one is ever touched, and neither is a checkout that holds one.
+/// Directories where coding agents keep worktrees they manage. A checkout
+/// under `.claude` is proposed only once its branch has merged, one under
+/// `.codex` never, and a checkout holding either is never proposed.
 const AGENT_DIRS: &[&str] = &[".claude", ".codex"];
 
 /// Agent workspaces under the home directory, relative to it. The Codex app
@@ -165,78 +199,11 @@ const BASELINE_PREFIX: &str = "planned:";
 /// stopped being proposed age out.
 const BASELINE_TTL: Duration = Duration::from_secs(30 * DAY);
 
-/// The evidence check, run as `sh -c EVIDENCE_SCRIPT sh <checkout> <common>`.
-///
-/// Prints `checked <n>` (regular files hashed), then one line per path whose
-/// content is not in the object store — `missing <blob> <path>` for a file,
-/// `nested <path>/` for a nested repository. Exits 3 if it cannot start, 4 if
-/// any step fails. See the module docs for why each step is there.
-///
-/// Every intermediate result goes to a temporary file whose writer's exit
-/// status is checked, rather than through a pipeline whose early stages could
-/// fail unseen: a truncated list would read as fewer unsaved files, which is
-/// the one direction this must never err in. That matters most when the disk
-/// is full, which is when this runs.
-const EVIDENCE_SCRIPT: &str = r#"set -u
-wt=$1 common=$2
-unset GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
-export GIT_DIR="$common" GIT_WORK_TREE="$wt" GIT_OPTIONAL_LOCKS=0
-export GIT_INDEX_FILE=/nonexistent/disk-saver-empty-index
-cd "$wt" || exit 3
-tmp=$(mktemp -d) || exit 3
-trap 'rm -f "$tmp"/*; rmdir "$tmp"' EXIT
-lines() { n=$(wc -l < "$1") || exit 4; echo $((n)); }
-git -c core.fsmonitor=false ls-files -z --others --exclude-standard > "$tmp/all" || exit 4
-xargs -0 sh -c 'nl="
-"
-for f do
-  case $f in *"$nl"*) echo "a file name contains a newline" >&2; exit 1;; esac
-  if [ -L "$f" ]; then :
-  elif [ -f "$f" ]; then
-    if [ -s "$f" ]; then printf "%s\n" "$f" || exit 1; fi
-  elif [ -d "$f" ]; then printf "%s\n" "$f" >&3 || exit 1
-  fi
-done' sh < "$tmp/all" > "$tmp/files" 3> "$tmp/nested" || exit 4
-n=$(lines "$tmp/files")
-git hash-object --no-filters --stdin-paths < "$tmp/files" > "$tmp/raw" || exit 4
-git cat-file --batch-check='%(objectname)' < "$tmp/raw" > "$tmp/rawfound" || exit 4
-[ "$(lines "$tmp/raw")" -eq "$n" ] && [ "$(lines "$tmp/rawfound")" -eq "$n" ] || exit 4
-paste "$tmp/rawfound" "$tmp/files" > "$tmp/rawpairs" || exit 4
-awk -F'\t' '$1 ~ / missing$/ { sub(/^[^\t]*\t/, ""); print }' "$tmp/rawpairs" > "$tmp/miss" || exit 4
-tr '\n' '\0' < "$tmp/miss" > "$tmp/miss0" || exit 4
-git check-attr -z --stdin filter < "$tmp/miss0" > "$tmp/attr0" || exit 4
-tr '\0' '\n' < "$tmp/attr0" > "$tmp/attr" || exit 4
-: > "$tmp/lfs" && : > "$tmp/conv" || exit 4
-awk -v lfs="$tmp/lfs" -v conv="$tmp/conv" 'NR % 3 == 1 { p = $0 } NR % 3 == 0 { if ($0 == "lfs") print p > lfs; else print p > conv }' "$tmp/attr" || exit 4
-m=$(lines "$tmp/miss")
-[ "$(lines "$tmp/attr")" -eq $((3 * m)) ] && [ $(($(lines "$tmp/lfs") + $(lines "$tmp/conv"))) -eq "$m" ] || exit 4
-git hash-object --stdin-paths < "$tmp/conv" > "$tmp/convh" || exit 4
-git cat-file --batch-check='%(objectname)' < "$tmp/convh" > "$tmp/convfound" || exit 4
-c=$(lines "$tmp/conv")
-[ "$(lines "$tmp/convh")" -eq "$c" ] && [ "$(lines "$tmp/convfound")" -eq "$c" ] || exit 4
-paste "$tmp/convfound" "$tmp/conv" > "$tmp/convpairs" || exit 4
-awk -F'\t' '$1 ~ / missing$/ { h = $1; sub(/ missing$/, "", h); sub(/^[^\t]*\t/, ""); print "missing " h " " $0 }' "$tmp/convpairs" > "$tmp/out" || exit 4
-while IFS= read -r f; do
-  size=$(wc -c < "$f") || exit 4
-  if command -v sha256sum > /dev/null 2>&1; then oid=$(sha256sum < "$f") || exit 4
-  else oid=$(shasum -a 256 < "$f") || exit 4
-  fi
-  oid=${oid%%[!0-9a-f]*}
-  [ ${#oid} -eq 64 ] || exit 4
-  printf 'version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n' "$oid" $((size)) > "$tmp/pointer" || exit 4
-  h=$(git hash-object --stdin < "$tmp/pointer") || exit 4
-  git cat-file -e "$h" 2> /dev/null || printf 'missing %s %s\n' "$h" "$f" >> "$tmp/out" || exit 4
-done < "$tmp/lfs"
-echo "checked $n"
-cat "$tmp/out" || exit 4
-sed 's/^/nested /' "$tmp/nested" || exit 4
-"#;
-
 // ── configuration ────────────────────────────────────────────────────────────
 
-/// `[adapters.orphaned-worktree]`. The keys are [`FsConfig`]'s, with this
-/// adapter's own defaults for `max_age` and `confirm`; a flattened `FsConfig`
-/// would impose its 30 days and `confirm = false`.
+/// `[adapters.git-worktree]`. The keys are [`FsConfig`]'s plus `merged_age`
+/// and `forges`, with this adapter's own defaults for `max_age` and `confirm`;
+/// a flattened `FsConfig` would impose its 30 days and `confirm = false`.
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 struct WorktreeConfig {
@@ -246,14 +213,21 @@ struct WorktreeConfig {
     exclude: Vec<String>,
     /// Levels below each root to descend. Defaults to `8`.
     max_depth: usize,
-    /// Idle time after which a checkout is proposed under normal pressure.
+    /// Idle time after which a worktree whose branch merged is proposed.
+    #[serde(with = "humantime_serde")]
+    merged_age: Duration,
+    /// Idle time after which any other worktree is proposed under normal
+    /// pressure.
     #[serde(with = "humantime_serde")]
     max_age: Duration,
     /// Floor under scavenge; `None` is [`DEFAULT_MIN_AGE`].
     #[serde(with = "humantime_serde")]
     min_age: Option<Duration>,
-    /// Ask before removing even a checkout whose evidence is clean.
+    /// Ask before removing even a worktree with nothing unsaved.
     confirm: bool,
+    /// Which forge serves each remote host, beyond the hosts recognised by
+    /// name.
+    forges: BTreeMap<String, ForgeKind>,
 }
 
 impl Default for WorktreeConfig {
@@ -262,9 +236,11 @@ impl Default for WorktreeConfig {
             roots: vec![PathBuf::from("~")],
             exclude: Vec::new(),
             max_depth: 8,
+            merged_age: DEFAULT_MERGED_AGE,
             max_age: DEFAULT_MAX_AGE,
             min_age: None,
             confirm: true,
+            forges: BTreeMap::new(),
         }
     }
 }
@@ -283,34 +259,58 @@ impl WorktreeConfig {
     }
 }
 
-/// The factory the CLI registry uses to build the `orphaned-worktree` adapter.
+/// The factory the CLI registry uses to build the `git-worktree` adapter.
 pub fn factory() -> AdapterFactory {
-    AdapterFactory::typed(NAME, build)
+    AdapterFactory::typed(NAME, |cfg, cx| build(cfg, cx, checks::check))
+}
+
+/// The adapter with `check` gathering each checkout's evidence.
+#[cfg(test)]
+fn factory_with(check: Check) -> AdapterFactory {
+    AdapterFactory::typed(NAME, move |cfg, cx| build(cfg, cx, check))
 }
 
 /// Resolve the scavenge floor, validate the thresholds, and compile `exclude`
 /// up front so a bad glob is a startup error rather than a failed run.
-fn build(cfg: WorktreeConfig, cx: &ConfigCx) -> Result<OrphanedWorktrees, ConfigError> {
+fn build(
+    mut cfg: WorktreeConfig,
+    cx: &ConfigCx,
+    check: Check,
+) -> Result<GitWorktrees, ConfigError> {
     // Our 3-day floor gives way to a shorter `max_age` the user wrote; a
     // `min_age` they wrote above `max_age` is reported.
     let min_age = Configured::from(cfg.min_age)
         .with_default(DEFAULT_MIN_AGE)
         .capped_at(cfg.max_age, cx, "min_age", "max_age")?
         .unwrap_or(DEFAULT_MIN_AGE);
-    Ok(OrphanedWorktrees {
+    if cfg.merged_age > cfg.max_age {
+        return Err(cx.err(format!(
+            "merged_age ({:?}) must not exceed max_age ({:?}): a merged worktree is the safer one to remove",
+            cfg.merged_age, cfg.max_age
+        )));
+    }
+    cfg.forges = std::mem::take(&mut cfg.forges)
+        .into_iter()
+        .map(|(host, kind)| (host.to_ascii_lowercase(), kind))
+        .collect();
+    Ok(GitWorktrees {
         policy: cx.retention(cfg.max_age, min_age)?,
         exclude: cx.globs("exclude", &cfg.exclude)?,
+        check,
         cfg,
     })
 }
 
-/// The `orphaned-worktree` adapter.
-struct OrphanedWorktrees {
+/// The `git-worktree` adapter.
+struct GitWorktrees {
     cfg: WorktreeConfig,
+    /// The policy for every worktree whose branch has not merged.
     policy: RetentionPolicy,
     /// The user's `exclude` globs, re-checked in `execute` so an approval that
     /// predates a new exclude cannot remove what it now covers.
     exclude: GlobSet,
+    /// What gathers each checkout's evidence.
+    check: Check,
 }
 
 // ── identification ───────────────────────────────────────────────────────────
@@ -372,7 +372,7 @@ fn read_link(p: &dyn Platform, dir: &Path) -> Option<Link> {
 ///
 /// Only "no such file" (or a path component that is not a directory) counts.
 /// Any other failure — permission denied on the way to it — reads as present,
-/// because a worktree wrongly judged orphaned is a candidate for deletion.
+/// because a worktree wrongly judged orphaned is held to the weaker evidence.
 fn admin_missing(p: &dyn Platform, link: &Link) -> bool {
     match p.metadata(&link.admin) {
         Ok(_) => false,
@@ -408,12 +408,12 @@ fn agent_component(path: &Path) -> Option<&'static str> {
 /// Checkouts each repository still lists, keyed by `<common>`, so a plan run
 /// reads each repository's admin directories once.
 #[derive(Default)]
-struct Listed(HashMap<PathBuf, Vec<PathBuf>>);
+struct Listed(HashMap<PathBuf, Vec<(PathBuf, PathBuf)>>);
 
 impl Listed {
-    /// The worktree checkouts `common` lists: each `<common>/worktrees/*/gitdir`
-    /// holds the path of a checkout's `.git` file.
-    fn of(&mut self, p: &dyn Platform, common: &Path) -> &[PathBuf] {
+    /// The worktree checkouts `common` lists, after their admin directories:
+    /// each `<common>/worktrees/*/gitdir` holds the path of a checkout's `.git` file.
+    fn of(&mut self, p: &dyn Platform, common: &Path) -> &[(PathBuf, PathBuf)] {
         self.0.entry(common.to_path_buf()).or_insert_with(|| {
             let Ok(admins) = p.read_dir(&common.join("worktrees")) else {
                 return Vec::new();
@@ -427,22 +427,120 @@ impl Listed {
                     if dotgit.is_empty() {
                         return None;
                     }
-                    normalize(&a.path.join(dotgit))
-                        .parent()
-                        .map(Path::to_path_buf)
+                    let checkout = normalize(&a.path.join(dotgit)).parent()?.to_path_buf();
+                    Some((a.path.clone(), checkout))
                 })
                 .collect()
         })
     }
 }
 
-/// Why an orphaned checkout must be left alone, if it must.
+/// A linked worktree's checkout.
+#[derive(Debug, Clone)]
+struct Worktree {
+    dir: PathBuf,
+    link: Link,
+    /// Its repository no longer lists it: the admin directory is gone.
+    forgotten: bool,
+}
+
+impl Worktree {
+    /// The worktree checked out at `dir`, if `dir` is one.
+    fn at(p: &dyn Platform, dir: &Path) -> Option<Worktree> {
+        let link = read_link(p, dir)?;
+        Some(Worktree {
+            dir: dir.to_path_buf(),
+            forgotten: admin_missing(p, &link),
+            link,
+        })
+    }
+}
+
+/// Every worktree under the roots, forgotten or listed.
+///
+/// The walk finds a forgotten worktree by its `.git` file, and does not descend
+/// into it. It finds repositories too: a listed worktree's `.git` file names
+/// one, and so does any `*.git` directory holding `worktrees/`. Each
+/// repository's admin directories then say where its checkouts are. A listing
+/// whose checkout no longer names it back (moved, copied or gone) is skipped:
+/// `git worktree prune` and `repair` own those.
+fn discover(
+    p: &dyn Platform,
+    roots: &[PathBuf],
+    opts: &ScanOptions,
+    listed: &mut Listed,
+) -> Vec<Worktree> {
+    let commons = RefCell::new(BTreeSet::new());
+    let forgotten = find_dirs(p, roots, opts, &|p, entry| {
+        match Worktree::at(p, &entry.path) {
+            Some(wt) if wt.forgotten => return true,
+            Some(wt) => {
+                commons.borrow_mut().insert(wt.link.common);
+            }
+            None => {
+                if entry.file_name.ends_with(".git")
+                    && p.metadata(&entry.path.join("worktrees"))
+                        .is_ok_and(|m| m.kind == FileKind::Dir)
+                {
+                    commons.borrow_mut().insert(entry.path.clone());
+                }
+            }
+        }
+        false
+    });
+
+    let mut found: BTreeMap<PathBuf, Worktree> = forgotten
+        .into_iter()
+        .filter_map(|dir| Some((dir.clone(), Worktree::at(p, &dir)?)))
+        .collect();
+    for common in commons.into_inner() {
+        for (admin, dir) in listed.of(p, &common) {
+            if read_link(p, dir).is_some_and(|l| l.admin == *admin) {
+                found.entry(dir.clone()).or_insert_with(|| Worktree {
+                    dir: dir.clone(),
+                    link: Link {
+                        admin: admin.clone(),
+                        common: common.clone(),
+                    },
+                    forgotten: false,
+                });
+            }
+        }
+    }
+    found.into_values().collect()
+}
+
+/// Whether `dir` is somewhere the adapter may look: under a root, outside the
+/// denylist, and neither excluded nor exempted by a `.disk-saver-keep` between
+/// it and its root. The walk applies the same rules to what it enters; a
+/// checkout found through its repository was never walked.
+fn in_scope(
+    p: &dyn Platform,
+    dir: &Path,
+    roots: &[PathBuf],
+    exclude: &GlobSet,
+    denylist: &[PathBuf],
+) -> bool {
+    let Some(root) = roots.iter().find(|r| dir.starts_with(r)) else {
+        return false;
+    };
+    if denylist.iter().any(|d| dir.starts_with(d)) {
+        return false;
+    }
+    dir.ancestors()
+        .take_while(|a| a.starts_with(root))
+        .all(|a| !exclude.is_match(a) && p.metadata(&a.join(KEEP_SENTINEL)).is_err())
+}
+
+/// Why a worktree must be left alone whatever its branch did, if it must.
 ///
 /// Checked in `plan` and again in `execute`, so an approval cannot outlive the
-/// reason it would now be refused.
-fn protected(p: &dyn Platform, dir: &Path, link: &Link, listed: &mut Listed) -> Option<String> {
-    if let Some(agent) = agent_component(dir) {
-        return Some(format!("agent-managed: it is under a {agent} directory"));
+/// reason it would now be refused. The `.claude` rule depends on the branch,
+/// so `plan` applies it.
+fn protected(p: &dyn Platform, wt: &Worktree, listed: &mut Listed) -> Option<String> {
+    let dir = &wt.dir;
+    if agent_component(dir) == Some(".codex") {
+        return Some("agent-managed: it is under a .codex directory".to_string());
     }
     let home = p.home_dir();
     if let Some(workspace) = AGENT_WORKSPACES
@@ -450,6 +548,34 @@ fn protected(p: &dyn Platform, dir: &Path, link: &Link, listed: &mut Listed) -> 
         .find(|ws| dir.starts_with(home.join(ws)))
     {
         return Some(format!("agent-managed: it is under ~/{workspace}"));
+    }
+    if !wt.forgotten && p.metadata(&wt.link.admin.join("locked")).is_ok() {
+        return Some("it is locked with `git worktree lock`".to_string());
+    }
+    // The nearest work tree enclosing it. Another repository's means a tool
+    // vendored this checkout there, and the enclosing project needs it; agent
+    // worktrees in `<repo>/.claude/worktrees` belong to the enclosing
+    // repository itself. The search stops below the home directory, which may
+    // be a dotfiles work tree.
+    let enclosing = dir
+        .ancestors()
+        .skip(1)
+        .take_while(|a| *a != home && a.parent().is_some())
+        .find_map(|host| {
+            let dotgit = host.join(".git");
+            let common = match p.metadata(&dotgit).ok()?.kind {
+                FileKind::Dir => Some(dotgit),
+                _ => read_link(p, host).map(|l| l.common),
+            };
+            Some((host, common))
+        });
+    if let Some((host, common)) = enclosing
+        && common.as_deref() != Some(wt.link.common.as_path())
+    {
+        return Some(format!(
+            "it is checked out inside {}, another repository's work tree",
+            tilde(&home, host)
+        ));
     }
     for agent in AGENT_DIRS {
         let worktrees = dir.join(agent).join("worktrees");
@@ -459,40 +585,63 @@ fn protected(p: &dyn Platform, dir: &Path, link: &Link, listed: &mut Listed) -> 
             ));
         }
     }
-    for checkout in listed.of(p, &link.common) {
-        if checkout == dir {
+    for (_, checkout) in listed.of(p, &wt.link.common) {
+        if checkout == dir && wt.forgotten {
             return Some(format!(
                 "{} still lists a worktree here; `git worktree repair` can relink it",
-                tilde(&home, link.repo())
+                tilde(&home, wt.link.repo())
             ));
         }
-        if checkout.starts_with(dir) {
+        if checkout != dir && checkout.starts_with(dir) {
             return Some(format!(
                 "it holds {}, a worktree {} still lists",
                 tilde(&home, checkout),
-                tilde(&home, link.repo())
+                tilde(&home, wt.link.repo())
             ));
         }
     }
     None
 }
 
-/// When the checkout was last used: the newest mtime among its top-level
-/// entries, ignoring [`NOT_ACTIVITY`]; failing that, the directory's own.
+/// What a listed worktree has checked out, from its admin directory's `HEAD`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Head {
+    Branch(String),
+    Detached,
+}
+
+fn read_head(p: &dyn Platform, admin: &Path) -> Option<Head> {
+    let text = p.read_to_string(&admin.join("HEAD")).ok()?;
+    let text = text.trim_end_matches(['\n', '\r']);
+    match text.strip_prefix("ref: refs/heads/") {
+        Some("") => None,
+        Some(branch) => Some(Head::Branch(branch.to_string())),
+        None => is_object_id(text).then_some(Head::Detached),
+    }
+}
+
+/// When the worktree was last used: the newest mtime among the checkout's
+/// top-level entries, ignoring [`NOT_ACTIVITY`] (failing that, the directory's
+/// own), and, while its repository lists it, its admin directory's `HEAD` and
+/// `index`, which git rewrites on every commit, checkout and `git add`. The
+/// reflog is left out: `git gc` rewrites it when it expires entries.
 ///
-/// `now` if neither can be read: activity we cannot see is treated as recent.
-fn last_used(p: &dyn Platform, dir: &Path, now: SystemTime) -> SystemTime {
+/// `now` if nothing can be read: activity we cannot see is treated as recent.
+fn last_used(p: &dyn Platform, wt: &Worktree, now: SystemTime) -> SystemTime {
     let newest = p
-        .read_dir(dir)
+        .read_dir(&wt.dir)
         .ok()
         .into_iter()
         .flatten()
         .filter(|e| !NOT_ACTIVITY.contains(&e.file_name.as_str()))
         .filter_map(|e| p.metadata(&e.path).ok().map(|m| m.modified))
-        .max();
-    newest
-        .or_else(|| p.metadata(dir).ok().map(|m| m.modified))
-        .unwrap_or(now)
+        .max()
+        .or_else(|| p.metadata(&wt.dir).ok().map(|m| m.modified));
+    let admin = ["HEAD", "index"]
+        .iter()
+        .filter(|_| !wt.forgotten)
+        .filter_map(|f| p.metadata(&wt.link.admin.join(f)).ok().map(|m| m.modified));
+    newest.into_iter().chain(admin).max().unwrap_or(now)
 }
 
 // ── evidence ─────────────────────────────────────────────────────────────────
@@ -500,14 +649,14 @@ fn last_used(p: &dyn Platform, dir: &Path, now: SystemTime) -> SystemTime {
 /// What the evidence check found in one checkout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Evidence {
-    /// Every non-ignored file's content is in the object store.
+    /// Nothing would be lost.
     Clean {
-        /// Regular files hashed.
+        /// Paths checked.
         checked: u64,
     },
-    /// Some content is not.
+    /// Something would.
     Unsaved {
-        /// Regular files hashed.
+        /// Paths checked.
         checked: u64,
         /// Every path that would be lost, sorted.
         lost: Vec<Lost>,
@@ -519,7 +668,7 @@ enum Evidence {
     },
 }
 
-/// One path whose content is not in the object store.
+/// One path whose content would be lost.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Lost {
     /// A nested repository git lists as a single entry; its files were not
@@ -537,8 +686,8 @@ impl Lost {
         }
     }
 
-    /// The line the script printed for it. Identifies the content as well as
-    /// the path, so an edit to an already-unsaved file shows up as a change.
+    /// One line naming the path and its content, so an edit to an
+    /// already-unsaved file shows up as a change.
     fn key(&self) -> String {
         match self {
             Lost::Repo { path } => format!("nested {path}"),
@@ -548,16 +697,18 @@ impl Lost {
 }
 
 impl Evidence {
-    /// Clean, with at least one file actually checked. A checkout in which the
-    /// script found nothing to hash (everything ignored) proved nothing, so it
-    /// is not enough to remove one without asking.
+    /// Clean, with at least one file actually checked. A forgotten checkout in
+    /// which the check found nothing to hash (everything ignored) proved
+    /// nothing, so it is not enough to remove one without asking.
     fn is_clean(&self) -> bool {
         matches!(self, Evidence::Clean { checked } if *checked > 0)
     }
 
-    /// The label's account of the evidence.
-    fn summary(&self) -> String {
+    /// The label's account of the evidence: for a forgotten checkout, what is
+    /// not in the object store; for a listed one, what is uncommitted.
+    fn summary(&self, forgotten: bool) -> String {
         match self {
+            Evidence::Clean { .. } if !forgotten => "nothing uncommitted".to_string(),
             Evidence::Clean { checked: 0 } => {
                 "no files to check: everything in it is ignored, empty or a symlink".to_string()
             }
@@ -570,7 +721,12 @@ impl Evidence {
                 let (n_repos, n_files) = (repos.clone().count(), files.clone().count());
                 let mut parts = Vec::new();
                 if n_files > 0 {
-                    parts.push(format!("{n_files} {} not in git", plural(n_files, "file")));
+                    let noun = plural(n_files, "file");
+                    parts.push(if forgotten {
+                        format!("{n_files} {noun} not in git")
+                    } else {
+                        format!("{n_files} uncommitted {noun}")
+                    });
                 }
                 if n_repos > 0 {
                     let noun = if n_repos == 1 {
@@ -586,7 +742,8 @@ impl Evidence {
                 format!("{} ({}{more})", parts.join(" and "), shown.join(", "))
             }
             Evidence::Unknown { reason } => {
-                format!("couldn't check for unsaved work: {reason}")
+                let work = if forgotten { "unsaved" } else { "uncommitted" };
+                format!("couldn't check for {work} work: {reason}")
             }
         }
     }
@@ -601,74 +758,10 @@ fn plural(n: usize, noun: &str) -> String {
     }
 }
 
-/// Run the evidence check on `dir`, a checkout of the repository at `common`.
-fn evidence(p: &dyn Platform, dir: &Path, link: &Link) -> Evidence {
-    let home = p.home_dir();
-    let unknown = |reason: String| Evidence::Unknown { reason };
-    match p.metadata(&link.common) {
-        Ok(m) if m.kind == FileKind::Dir => {}
-        Ok(_) => {
-            return unknown(format!("{} is not a directory", tilde(&home, &link.common)));
-        }
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            return unknown(format!(
-                "its repository {} is gone",
-                tilde(&home, link.repo())
-            ));
-        }
-        Err(e) => return unknown(format!("couldn't read {}: {e}", tilde(&home, &link.common))),
-    }
-    if !p
-        .metadata(&link.common.join("objects"))
-        .is_ok_and(|m| m.kind == FileKind::Dir)
-    {
-        return unknown(format!(
-            "{} is not a git repository",
-            tilde(&home, &link.common)
-        ));
-    }
-
-    match p.run_command(&check_command(dir, &link.common)) {
-        Err(e) => unknown(format!("couldn't run the check: {e}")),
-        Ok(out) if !out.success() => unknown(failure(&out)),
-        Ok(out) => parse_report(&out.stdout_string())
-            .unwrap_or_else(|| unknown("the check printed something unexpected".to_string())),
-    }
-}
-
-/// The evidence check for `dir` against `common`: paths travel as positional
-/// parameters, never as shell text.
-fn check_command(dir: &Path, common: &Path) -> CommandSpec {
-    CommandSpec::new(
-        "sh",
-        [
-            "-c",
-            EVIDENCE_SCRIPT,
-            "sh",
-            &dir.to_string_lossy(),
-            &common.to_string_lossy(),
-        ],
-    )
-    .with_timeout(CHECK_TIMEOUT)
-}
-
-/// Why the script exited non-zero: its exit code's meaning plus the last line
-/// it wrote to stderr (git's `fatal:` line, usually).
-fn failure(out: &CommandOutput) -> String {
-    let what = match out.status {
-        3 => "couldn't start the check".to_string(),
-        4 => "the check failed".to_string(),
-        status => format!("the check exited with status {status}"),
-    };
-    let stderr = out.stderr_string();
-    match stderr.lines().map(str::trim).rfind(|l| !l.is_empty()) {
-        Some(line) => format!("{what}: {}", line.chars().take(200).collect::<String>()),
-        None => what,
-    }
-}
-
-/// Parse the script's report (see [`EVIDENCE_SCRIPT`]). `None` if any line is
-/// not one the script prints.
+/// Parse evidence written as a `checked <n>` line, then one [`Lost::key`] line
+/// per path, the form the policy tests script it in. `None` if any line is not
+/// one of those.
+#[cfg(test)]
 fn parse_report(text: &str) -> Option<Evidence> {
     // Split on `\n` only: a path may end in `\r`.
     let mut lines = text.split('\n');
@@ -715,7 +808,22 @@ struct Baseline {
     label: String,
     /// Unix seconds when stored, for expiry.
     recorded_at: u64,
+    /// What the checkout was proposed as; `execute` refuses one that is
+    /// something else now.
+    proposed_as: ProposedAs,
     evidence: Recorded,
+}
+
+/// The state a checkout was proposed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ProposedAs {
+    /// Its repository had forgotten it.
+    Forgotten,
+    /// Listed, and its branch had merged.
+    Merged,
+    /// Listed, and its branch had not merged (or nobody could say).
+    Unmerged,
 }
 
 /// [`Evidence`] reduced to what `execute` compares against.
@@ -848,17 +956,24 @@ fn expire_baselines(ctx: &Ctx, now: SystemTime) {
 
 // ── the adapter ──────────────────────────────────────────────────────────────
 
-impl OrphanedWorktrees {
-    /// Re-check a candidate immediately before removing it. `Err` is the reason
-    /// to skip it.
-    fn revalidate(&self, ctx: &Ctx, c: &Candidate) -> Result<(), String> {
+impl GitWorktrees {
+    /// Re-check a candidate immediately before removing it, returning it and
+    /// the checkouts embedded in it, whose admin directories go with it. `Err`
+    /// is the reason to skip it.
+    fn revalidate(&self, ctx: &Ctx, c: &Candidate) -> Result<(Worktree, Vec<Worktree>), String> {
         let p = ctx.platform;
         let dir = Path::new(&c.id);
         if !dir.is_absolute() {
             return Err(format!("{} is not an absolute path", c.id));
         }
+        let baseline = ctx.kv.get::<Baseline>(&baseline_key(&c.id)).ok().flatten();
         if let Some(agent) = agent_component(dir) {
-            return Err(format!("agent-managed: it is under a {agent} directory"));
+            let merged = baseline
+                .as_ref()
+                .is_some_and(|b| b.proposed_as == ProposedAs::Merged);
+            if agent != ".claude" || !merged {
+                return Err(format!("agent-managed: it is under a {agent} directory"));
+            }
         }
         if self.exclude.is_match(dir) {
             return Err("an `exclude` glob covers it".to_string());
@@ -882,43 +997,109 @@ impl OrphanedWorktrees {
         {
             return Err(format!("{} exempts it", keep.display()));
         }
-        let link = read_link(p, dir)
+        let wt = Worktree::at(p, dir)
             .ok_or_else(|| "its .git no longer points at a worktree admin directory".to_string())?;
-        if !admin_missing(p, &link) {
-            return Err("it is registered with its repository again".to_string());
-        }
-        if let Some(reason) = protected(p, dir, &link, &mut Listed::default()) {
+        let mut listed = Listed::default();
+        if let Some(reason) = protected(p, &wt, &mut listed) {
             return Err(reason);
         }
-        if last_used(p, dir, ctx.now()) > c.last_used {
+        let Some(baseline) = baseline else {
+            return Err(
+                "no record of the evidence it was proposed with; the next run re-checks it"
+                    .to_string(),
+            );
+        };
+        match (baseline.proposed_as, wt.forgotten) {
+            (ProposedAs::Forgotten, false) => {
+                return Err("it is registered with its repository again".to_string());
+            }
+            (ProposedAs::Merged | ProposedAs::Unmerged, true) => {
+                return Err("its repository no longer lists it".to_string());
+            }
+            _ => {}
+        }
+        if !wt.forgotten
+            && !listed
+                .of(p, &wt.link.common)
+                .iter()
+                .any(|(admin, checkout)| *admin == wt.link.admin && checkout == dir)
+        {
+            return Err("its repository lists another checkout under that name".to_string());
+        }
+        if last_used(p, &wt, ctx.now()) > c.last_used {
             return Err("it has been used since it was proposed".to_string());
         }
-
-        let baseline = match ctx.kv.get::<Baseline>(&baseline_key(&c.id)) {
-            Ok(Some(b)) => b,
-            Ok(None) | Err(_) => {
-                return Err(
-                    "no record of the evidence it was proposed with; the next run re-checks it"
-                        .to_string(),
-                );
-            }
-        };
         if baseline.label != c.label {
             return Err(
                 "its evidence changed after it was proposed; the next run proposes it again"
                     .to_string(),
             );
         }
-        match regression(&baseline.evidence, &evidence(p, dir, &link)) {
-            Some(reason) => Err(reason),
-            None => Ok(()),
+        let embedded = embedded(p, &wt);
+        match evidence(p, &wt, &embedded, self.check) {
+            Status::Unreachable => Err(UNREACHABLE.to_string()),
+            Status::Checked(now) => match regression(&baseline.evidence, &now) {
+                Some(reason) => Err(reason),
+                None => Ok((wt, embedded)),
+            },
         }
     }
 }
 
-impl Adapter for OrphanedWorktrees {
+impl Adapter for GitWorktrees {
     fn name(&self) -> &'static str {
         NAME
+    }
+
+    /// One real lookup per forge host that a listed worktree under the roots
+    /// pushes to, so `disk-saver doctor` shows a missing CLI, a lapsed login or
+    /// an answer the adapter no longer understands. Runs never call this: with
+    /// no answer, a merged worktree just waits for `max_age` and asks.
+    fn check(&mut self, ctx: &mut Ctx) -> Result<(), AdapterError> {
+        let p = ctx.platform;
+        let (roots, opts) =
+            self.cfg.as_fs().resolve_walk(p).map_err(|e| {
+                AdapterError::Failed(anyhow::anyhow!("compiling exclude globs: {e}"))
+            })?;
+        let denylist = FsConfig::denylist(p);
+        let mut hosts: BTreeMap<String, Option<String>> = BTreeMap::new();
+        for wt in discover(p, &roots, &opts, &mut Listed::default()) {
+            if wt.forgotten || !in_scope(p, &wt.dir, &roots, &opts.exclude, &denylist) {
+                continue;
+            }
+            let Some(Head::Branch(branch)) = read_head(p, &wt.link.admin) else {
+                continue;
+            };
+            let Ok(remote) = forge::remote_of(p, &wt.dir, &branch) else {
+                continue;
+            };
+            if hosts.contains_key(&remote.host) {
+                continue;
+            }
+            let problem = match forge::kind_for(&remote.host, &self.cfg.forges) {
+                ForgeKind::None if self.cfg.forges.contains_key(&remote.host) => None,
+                ForgeKind::None => Some(
+                    "not a known forge; name it in `forges` (or map it to \"none\")".to_string(),
+                ),
+                kind => match forge::query(p, kind, &remote, &branch) {
+                    ForgeState::Unknown(reason) => Some(reason),
+                    _ => None,
+                },
+            };
+            hosts.insert(remote.host, problem);
+        }
+        let problems: Vec<String> = hosts
+            .into_iter()
+            .filter_map(|(host, problem)| problem.map(|why| format!("{host}: {why}")))
+            .collect();
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(AdapterError::unavailable(format!(
+                "can't tell which worktrees merged ({})",
+                problems.join("; ")
+            )))
+        }
     }
 
     fn observe(&mut self, _ctx: &mut Ctx) -> Result<(), AdapterError> {
@@ -930,87 +1111,137 @@ impl Adapter for OrphanedWorktrees {
         if !ctx.pressure.deletes() {
             return Ok(Vec::new());
         }
+        let p = ctx.platform;
         let now = ctx.now();
-        let home = ctx.platform.home_dir();
+        let home = p.home_dir();
         let (roots, opts) =
-            self.cfg.as_fs().resolve_walk(ctx.platform).map_err(|e| {
+            self.cfg.as_fs().resolve_walk(p).map_err(|e| {
                 AdapterError::Failed(anyhow::anyhow!("compiling exclude globs: {e}"))
             })?;
-
-        // Registered worktrees are not matches, so the walk carries on into
-        // them, but each is noted so `why` can say why it was left.
-        let registered = RefCell::new(Vec::new());
-        let orphans = find_dirs(ctx.platform, &roots, &opts, &|p, entry| match read_link(
-            p,
-            &entry.path,
-        ) {
-            Some(link) if admin_missing(p, &link) => true,
-            Some(link) => {
-                registered.borrow_mut().push((entry.path.clone(), link));
-                false
-            }
-            None => false,
-        });
-        for (dir, link) in registered.into_inner() {
-            record_kept(
-                ctx,
-                &dir,
-                None,
-                format!("still registered with {}", tilde(&home, link.repo())),
-            );
-        }
-
+        let denylist = FsConfig::denylist(p);
+        let threshold = match ctx.pressure {
+            Pressure::Scavenge { .. } => self.policy.min_age,
+            Pressure::Normal | Pressure::Comfortable => self.policy.max_age,
+        };
         let mut listed = Listed::default();
-        let mut candidates = Vec::new();
-        for dir in orphans {
-            // Re-read rather than carry the matcher's result out of the walk;
-            // it is one small file.
-            let Some(link) = read_link(ctx.platform, &dir) else {
-                continue;
-            };
-            if let Some(owner) = ctx.claims.owner(&dir) {
-                record_kept(ctx, &dir, None, format!("claimed by {owner}"));
-                continue;
-            }
-            // Ours whether or not it is proposed: `git-ignored` must not offer
-            // up its contents piecemeal.
-            ctx.claim(dir.clone());
-            if let Some(reason) = protected(ctx.platform, &dir, &link, &mut listed) {
-                record_kept(ctx, &dir, None, reason);
-                continue;
-            }
-            let used = last_used(ctx.platform, &dir, now);
-            let age = now.duration_since(used).unwrap_or_default();
-            if !self.policy.eligible(age, ctx.pressure) {
-                let threshold = match ctx.pressure {
-                    Pressure::Scavenge { .. } => self.policy.min_age,
-                    Pressure::Normal | Pressure::Comfortable => self.policy.max_age,
-                };
-                record_kept(
-                    ctx,
-                    &dir,
-                    Some(age),
-                    format!(
-                        "idle {}, under the {} threshold",
-                        humanize(age),
-                        humanize(threshold)
-                    ),
-                );
-                continue;
-            }
+        let mut warned = BTreeSet::new();
 
-            let evidence = evidence(ctx.platform, &dir, &link);
-            let bytes = ctx.platform.dir_size(&dir).unwrap_or(0);
+        let mut candidates = Vec::new();
+        for wt in discover(p, &roots, &opts, &mut listed) {
+            let dir = &wt.dir;
+            if !in_scope(p, dir, &roots, &opts.exclude, &denylist) {
+                continue;
+            }
+            if let Some(owner) = ctx.claims.owner(dir) {
+                record_kept(ctx, dir, None, format!("claimed by {owner}"));
+                continue;
+            }
+            // A forgotten checkout is ours whether or not it is proposed:
+            // `git-ignored` must not offer up its contents piecemeal.
+            if wt.forgotten {
+                ctx.claim(dir.clone());
+            }
+            if let Some(reason) = protected(p, &wt, &mut listed) {
+                record_kept(ctx, dir, None, reason);
+                continue;
+            }
+            let used = last_used(p, &wt, now);
+            let age = now.duration_since(used).unwrap_or_default();
+            let idle = |limit: Duration| {
+                format!(
+                    "idle {}, under the {} threshold",
+                    humanize(age),
+                    humanize(limit)
+                )
+            };
+
+            let (state, on, proposed_as) = if wt.forgotten {
+                if age < threshold {
+                    record_kept(ctx, dir, Some(age), idle(threshold));
+                    continue;
+                }
+                if agent_component(dir) == Some(".claude") {
+                    let reason = "agent-managed: it is under a .claude directory";
+                    record_kept(ctx, dir, Some(age), reason.to_string());
+                    continue;
+                }
+                let state = "forgotten by its repository".to_string();
+                (state, String::new(), ProposedAs::Forgotten)
+            } else {
+                let Some(head) = read_head(p, &wt.link.admin) else {
+                    let reason = "couldn't read what it has checked out";
+                    record_kept(ctx, dir, None, reason.to_string());
+                    continue;
+                };
+                // Nothing younger than both thresholds can be proposed, so it
+                // is kept before the forge is asked.
+                let floor = self.cfg.merged_age.min(threshold);
+                if age < floor {
+                    record_kept(ctx, dir, Some(age), idle(floor));
+                    continue;
+                }
+                let (forge, on) = match &head {
+                    Head::Branch(branch) => (
+                        forge::lookup(p, dir, branch, &self.cfg.forges),
+                        format!(" on {branch}"),
+                    ),
+                    Head::Detached => (ForgeState::Detached, " at a detached HEAD".to_string()),
+                };
+                if let ForgeState::Unknown(reason) = &forge
+                    && warned.insert(reason.clone())
+                {
+                    tracing::warn!(
+                        target: NAME,
+                        %reason,
+                        "couldn't look up a worktree's MR or PR; it waits for max_age"
+                    );
+                }
+                let merged = matches!(forge, ForgeState::Merged(_));
+                let limit = if merged {
+                    self.cfg.merged_age
+                } else {
+                    threshold
+                };
+                if let ForgeState::Open(request) = &forge {
+                    record_kept(ctx, dir, Some(age), format!("{request} is open"));
+                    continue;
+                }
+                if !merged && agent_component(dir) == Some(".claude") {
+                    let reason = format!("agent-managed, so proposed only once merged: {forge}");
+                    record_kept(ctx, dir, Some(age), reason);
+                    continue;
+                }
+                if age < limit {
+                    record_kept(ctx, dir, Some(age), format!("{}: {forge}", idle(limit)));
+                    continue;
+                }
+                let proposed_as = if merged {
+                    ProposedAs::Merged
+                } else {
+                    ProposedAs::Unmerged
+                };
+                (forge.to_string(), on, proposed_as)
+            };
+
+            let evidence = match evidence(p, &wt, &embedded(p, &wt), self.check) {
+                Status::Unreachable => {
+                    record_kept(ctx, dir, Some(age), UNREACHABLE.to_string());
+                    continue;
+                }
+                Status::Checked(evidence) => evidence,
+            };
+            let bytes = p.dir_size(dir).unwrap_or(0);
             let id = dir.to_string_lossy().into_owned();
             let label = format!(
-                "orphaned worktree of {}: {} — {}",
-                tilde(&home, link.repo()),
-                tilde(&home, &dir),
-                evidence.summary()
+                "worktree of {}: {}{on} — {state} — {}",
+                tilde(&home, wt.link.repo()),
+                tilde(&home, dir),
+                evidence.summary(wt.forgotten)
             );
             let baseline = Baseline {
                 label: label.clone(),
                 recorded_at: unix(now),
+                proposed_as,
                 evidence: Recorded::of(&evidence),
             };
             if let Err(e) = ctx.kv.set(&baseline_key(&id), &baseline, now) {
@@ -1018,8 +1249,17 @@ impl Adapter for OrphanedWorktrees {
                 // removal, never a wrong one.
                 tracing::warn!(target: NAME, error = %e, path = %id, "couldn't store evidence");
             }
-            // Unsaved or unknown work always waits for a person.
-            let confirm = self.cfg.confirm || !evidence.is_clean();
+            // Unsaved or unknown work, and anything not done with, waits for a
+            // person.
+            let clean = if wt.forgotten {
+                evidence.is_clean()
+            } else {
+                matches!(evidence, Evidence::Clean { .. })
+            };
+            let confirm = self.cfg.confirm || proposed_as == ProposedAs::Unmerged || !clean;
+            if !wt.forgotten {
+                ctx.claim(dir.clone());
+            }
             candidates.push(
                 Candidate::new(id.clone(), label.clone(), bytes, used, CLASS).confirm(confirm),
             );
@@ -1048,13 +1288,31 @@ impl Adapter for OrphanedWorktrees {
                     id: c.id.clone(),
                     reason,
                 },
-                Ok(()) => {
-                    let dir = Path::new(&c.id);
+                Ok((wt, embedded)) => {
+                    let p = ctx.platform;
                     // Measured now: another adapter may have removed a
                     // `target/` inside it since it was planned.
-                    let bytes = ctx.platform.dir_size(dir).unwrap_or(c.bytes);
-                    match ctx.platform.remove_dir_all(dir) {
+                    let bytes = p.dir_size(&wt.dir).unwrap_or(c.bytes);
+                    match p.remove_dir_all(&wt.dir) {
                         Ok(()) => {
+                            // The checkouts are gone either way; a leftover
+                            // admin directory only lists a missing worktree,
+                            // which `git worktree prune` clears.
+                            let admins = (!wt.forgotten)
+                                .then_some(&wt)
+                                .into_iter()
+                                .chain(&embedded)
+                                .map(|w| &w.link.admin);
+                            for admin in admins {
+                                if let Err(e) = p.remove_dir_all(admin) {
+                                    tracing::warn!(
+                                        target: NAME,
+                                        error = %e,
+                                        admin = %admin.display(),
+                                        "removed the checkout but not its admin directory"
+                                    );
+                                }
+                            }
                             let _ = ctx.kv.delete(&baseline_key(&c.id));
                             Outcome::Removed {
                                 id: c.id.clone(),

@@ -45,7 +45,7 @@ disk-saver-adapter-homebrew = { path = "crates/adapter-homebrew", version = "0.4
 disk-saver-adapter-orbstack = { path = "crates/adapter-orbstack", version = "0.4.0" }
 disk-saver-adapter-rustup = { path = "crates/adapter-rustup", version = "0.4.0" }
 disk-saver-adapter-cachedir-tag = { path = "crates/adapter-cachedir-tag", version = "0.4.0" }
-disk-saver-adapter-orphaned-worktree = { path = "crates/adapter-orphaned-worktree", version = "0.4.0" }
+disk-saver-adapter-git-worktree = { path = "crates/adapter-git-worktree", version = "0.4.0" }
 disk-saver-adapter-app-temp = { path = "crates/adapter-app-temp", version = "0.4.0" }
 
 # ── external ──

@@ -1,18 +1,43 @@
-//! Tests for the `orphaned-worktree` adapter. Everything but the last section
-//! runs against [`FakePlatform`], with the evidence script's output scripted per
-//! checkout; the last runs the real script against real `git`.
+//! Tests for the `git-worktree` adapter. This module covers forgotten
+//! worktrees, `registered` listed ones.
+//!
+//! The policy tests gather evidence with [`canned`] rather than the real
+//! checks, so a test says what a checkout holds without scripting every git
+//! call. Each check also runs against the fake platform for its failures and
+//! against real git for what it reports.
 
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use disk_saver_core::{
-    Adapter, Candidate, Claims, Class, CommandOutput, Ctx, DecisionLog, Outcome, Platform,
-    Pressure, RecordedDecision, Store, read_decisions,
+    Adapter, Candidate, Claims, Class, CommandOutput, CommandSpec, Ctx, DecisionLog, Outcome,
+    Platform, Pressure, RecordedDecision, Store, read_decisions,
 };
 use disk_saver_platform::FakePlatform;
 
-use super::*;
+use crate::checks::*;
+use crate::*;
+
+mod registered;
+
+/// A [`Check`] that reads what the test scripted for the checkout as the
+/// command `evidence <dir>`: [`parse_report`]'s format. Exit 5 stands for a
+/// detached HEAD nothing else holds; any other failure is unknown evidence,
+/// with stderr as the reason.
+fn canned(p: &dyn Platform, wt: &Worktree) -> Status {
+    let unknown = |reason: String| Status::Checked(Evidence::Unknown { reason });
+    let dir = wt.dir.to_string_lossy();
+    match p.run_command(&CommandSpec::new("evidence", [dir.as_ref()])) {
+        Err(e) => unknown(format!("couldn't run the check: {e}")),
+        Ok(out) if out.status == 5 => Status::Unreachable,
+        Ok(out) if !out.success() => unknown(out.stderr_string().trim().to_string()),
+        Ok(out) => match parse_report(&out.stdout_string()) {
+            Some(evidence) => Status::Checked(evidence),
+            None => unknown("the test scripted unreadable evidence".to_string()),
+        },
+    }
+}
 
 const HOME: &str = "/home/tester";
 /// The repository's git directory. Its work tree is `~/work/monorepo`.
@@ -60,7 +85,8 @@ fn gitfile(fake: FakePlatform, path: &str, target: &str) -> FakePlatform {
     )
 }
 
-/// Register the worktree at `path`: create its admin directory.
+/// Register the worktree at `path`: create its admin directory, with a `HEAD`
+/// written just now, as for a checkout in use.
 fn register(fake: FakePlatform, path: &str) -> FakePlatform {
     let name = Path::new(path).file_name().unwrap().to_str().unwrap();
     fake.with_file(
@@ -68,17 +94,21 @@ fn register(fake: FakePlatform, path: &str) -> FakePlatform {
         format!("{}/.git\n", abs(path)),
         day(1),
     )
+    .with_file(
+        format!("{COMMON}/worktrees/{name}/HEAD"),
+        format!("ref: refs/heads/{name}\n"),
+        day(400),
+    )
 }
 
-/// Script the evidence check's report for the checkout at `path`.
+/// Script the evidence for the checkout at `path` (see [`canned`]).
 fn report(fake: FakePlatform, path: &str, stdout: &str) -> FakePlatform {
     reply(fake, path, CommandOutput::ok(stdout))
 }
 
-/// Script the evidence check's full output for the checkout at `path`.
+/// Script the evidence command's full output for the checkout at `path`.
 fn reply(fake: FakePlatform, path: &str, out: CommandOutput) -> FakePlatform {
-    let dir = abs(path);
-    fake.with_command_prefix("sh", &["-c", EVIDENCE_SCRIPT, "sh", &dir], out)
+    fake.with_command("evidence", &[&abs(path)], out)
 }
 
 const CLEAN: &str = "checked 12\n";
@@ -87,9 +117,20 @@ fn blob(c: char) -> String {
     c.to_string().repeat(40)
 }
 
-/// The adapter with `roots = ["~/work"]` plus `extra` config lines.
+/// The adapter with `roots = ["~/work"]` plus `extra` config lines, gathering
+/// canned evidence.
 fn adapter(extra: &str) -> Box<dyn Adapter> {
-    let raw: toml::Value = toml::from_str(&format!("roots = [\"~/work\"]\n{extra}")).unwrap();
+    configured(&format!("roots = [\"~/work\"]\n{extra}"))
+}
+
+fn configured(text: &str) -> Box<dyn Adapter> {
+    let raw: toml::Value = toml::from_str(text).unwrap();
+    factory_with(canned).build(Some(raw)).unwrap()
+}
+
+/// The adapter with `roots = ["~/work"]`, running the real checks.
+fn real_adapter() -> Box<dyn Adapter> {
+    let raw: toml::Value = toml::from_str("roots = [\"~/work\"]").unwrap();
     factory().build(Some(raw)).unwrap()
 }
 
@@ -133,12 +174,12 @@ fn ids(cands: &[Candidate]) -> Vec<&str> {
     ids
 }
 
-/// Every checkout the evidence check ran against, in order.
+/// Every checkout evidence was gathered for, in order.
 fn checked(fake: &FakePlatform) -> Vec<String> {
     fake.commands_run()
         .into_iter()
-        .filter(|c| c.program == "sh")
-        .map(|c| c.args[3].clone())
+        .filter(|c| c.program == "evidence")
+        .map(|c| c.args[0].clone())
         .collect()
 }
 
@@ -174,8 +215,8 @@ fn finds_orphans_including_dot_named_ones() {
         .unwrap();
     assert_eq!(
         c.label,
-        "orphaned worktree of ~/work/monorepo: ~/work/feature-routing \
-         — every non-ignored file's content is in git (12 checked)"
+        "worktree of ~/work/monorepo: ~/work/feature-routing \
+         — forgotten by its repository — every non-ignored file's content is in git (12 checked)"
     );
     assert_eq!(c.class, Class::UserData);
     assert_eq!(c.last_used, day(380));
@@ -184,7 +225,7 @@ fn finds_orphans_including_dot_named_ones() {
 }
 
 #[test]
-fn a_registered_worktree_is_neither_proposed_nor_claimed() {
+fn a_listed_worktree_never_gets_the_forgotten_check() {
     let fake = register(
         orphan(world(), "~/work/bucket-fix", day(1)),
         "~/work/bucket-fix",
@@ -238,14 +279,11 @@ fn a_relative_gitdir_is_resolved_against_the_checkout() {
 
     assert_eq!(ids(&cands), ["/home/tester/work/rel"]);
     assert!(
-        cands[0]
-            .label
-            .starts_with("orphaned worktree of ~/work/monorepo: ~/work/rel")
+        cands[0].label.starts_with(
+            "worktree of ~/work/monorepo: ~/work/rel — forgotten by its repository — "
+        )
     );
-    // The script got `<common>` with `..` resolved.
-    let run = &fake.commands_run()[0];
-    assert_eq!(run.args[4], COMMON);
-    assert_eq!(run.timeout, Some(CHECK_TIMEOUT));
+    assert_eq!(checked(&fake), ["/home/tester/work/rel"]);
 }
 
 #[test]
@@ -266,8 +304,8 @@ fn agent_managed_worktrees_are_claimed_but_never_proposed() {
     // reaches these.
     let fake = orphan(world(), "~/work/monorepo/.claude/worktrees/agent-a", day(1));
     let fake = orphan(fake, "~/.codex/worktrees/abc/monorepo", day(1));
-    let cfg = r#"roots = ["~/work/monorepo/.claude/worktrees", "~/.codex/worktrees"]"#;
-    let mut a = factory().build(Some(toml::from_str(cfg).unwrap())).unwrap();
+    let mut a =
+        configured(r#"roots = ["~/work/monorepo/.claude/worktrees", "~/.codex/worktrees"]"#);
     let store = Store::open_in_memory().unwrap();
 
     let (cands, mut claimed) = plan(&fake, &mut a, &store, SCAVENGE);
@@ -292,8 +330,7 @@ fn checkouts_in_the_codex_app_workspace_are_never_proposed() {
     let fake = orphan(world(), path, day(1));
     let fake = report(fake, path, CLEAN);
     let store = Store::open_in_memory().unwrap();
-    let raw: toml::Value = toml::from_str(r#"roots = ["~/Documents"]"#).unwrap();
-    let mut a = factory().build(Some(raw)).unwrap();
+    let mut a = configured(r#"roots = ["~/Documents"]"#);
 
     let (cands, claimed) = plan(&fake, &mut a, &store, SCAVENGE);
 
@@ -374,74 +411,104 @@ fn honours_exclude_and_the_keep_sentinel() {
 // ── evidence ─────────────────────────────────────────────────────────────────
 
 #[test]
-fn parses_clean_and_unsaved_reports() {
-    assert_eq!(
-        parse_report("checked 3\n"),
-        Some(Evidence::Clean { checked: 3 })
+fn the_check_points_git_at_the_repository_with_an_empty_index() {
+    let wt = abs("~/work/wt");
+    let fake = orphan(world(), "~/work/wt", day(1)).with_command_prefix(
+        "git",
+        &[
+            "--no-optional-locks",
+            "-c",
+            "core.fsmonitor=false",
+            "ls-files",
+        ],
+        CommandOutput::ok(""),
     );
-    assert_eq!(
-        parse_report("checked 0\n"),
-        Some(Evidence::Clean { checked: 0 })
-    );
+    let worktree = Worktree::at(&fake, Path::new(&wt)).unwrap();
 
-    let text = format!(
-        "checked 9\nmissing {} src/a b.rs\nmissing {} tab\there.txt\nnested vendor/lib/\n",
-        blob('b'),
-        "c".repeat(64)
+    assert_eq!(
+        check(&fake, &worktree),
+        Status::Checked(Evidence::Clean { checked: 0 })
     );
-    let Some(Evidence::Unsaved { checked, lost }) = parse_report(&text) else {
-        panic!("expected Unsaved");
+    let run = &fake.commands_run()[0];
+    assert_eq!(run.dir.as_deref(), Some(Path::new(&wt)));
+    assert_eq!(run.timeout, Some(CHECK_TIMEOUT));
+    let set = |name: &str| {
+        run.env
+            .iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.clone())
     };
-    assert_eq!(checked, 9);
-    assert_eq!(
-        lost,
-        [
-            Lost::Repo {
-                path: "vendor/lib/".into()
-            },
-            Lost::File {
-                path: "src/a b.rs".into(),
-                blob: blob('b')
-            },
-            Lost::File {
-                path: "tab\there.txt".into(),
-                blob: "c".repeat(64)
-            },
-        ]
-    );
-}
-
-#[test]
-fn rejects_reports_the_script_never_prints() {
-    for text in [
-        "",
-        "missing aaaa x\n",
-        "checked three\n",
-        "checked 1\nsomething else\n",
-        "checked 1\nmissing nothex src/a.rs\n",
-        &format!("checked 1\nmissing {}\n", blob('a')),
-        &format!("checked 1\nmissing {} \n", blob('a')),
-        "checked 1\nnested \n",
+    // `<common>` with `..` resolved, and an index that does not exist.
+    assert_eq!(set("GIT_DIR"), Some(Some(COMMON.to_string())));
+    assert_eq!(set("GIT_WORK_TREE"), Some(Some(wt.clone())));
+    assert_eq!(set("GIT_INDEX_FILE"), Some(Some(EMPTY_INDEX.to_string())));
+    for var in [
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     ] {
-        assert_eq!(parse_report(text), None, "{text:?}");
+        assert_eq!(set(var), Some(None), "{var} is removed");
     }
 }
 
 #[test]
-fn failure_names_the_step_and_the_last_stderr_line() {
-    let out = |status, stderr: &str| CommandOutput {
-        status,
-        stdout: Vec::new(),
-        stderr: stderr.as_bytes().to_vec(),
-    };
-    assert_eq!(
-        failure(&out(4, "warning: CRLF\nfatal: bad object\n\n")),
-        "the check failed: fatal: bad object"
+fn a_failing_step_is_named_with_its_last_stderr_line() {
+    let wt = abs("~/work/wt");
+    let check =
+        |fake: &FakePlatform| match check(fake, &Worktree::at(fake, Path::new(&wt)).unwrap()) {
+            Status::Checked(Evidence::Unknown { reason }) => reason,
+            other => panic!("expected Unknown, got {other:?}"),
+        };
+    let failing = orphan(world(), "~/work/wt", day(1)).with_command_prefix(
+        "git",
+        &[
+            "--no-optional-locks",
+            "-c",
+            "core.fsmonitor=false",
+            "ls-files",
+        ],
+        CommandOutput {
+            status: 128,
+            stdout: Vec::new(),
+            stderr: b"warning: CRLF\nfatal: bad object\n\n".to_vec(),
+        },
     );
-    assert_eq!(failure(&out(3, "")), "couldn't start the check");
+    assert_eq!(check(&failing), "git ls-files failed: fatal: bad object");
+
+    let missing =
+        orphan(world(), "~/work/wt", day(1)).with_command_error("git", io::ErrorKind::NotFound);
+    assert_eq!(check(&missing), "git is not installed");
+
+    let slow =
+        orphan(world(), "~/work/wt", day(1)).with_command_error("git", io::ErrorKind::TimedOut);
+    assert_eq!(check(&slow), "git ls-files timed out");
+
+    // An answer that does not line up with the question is no answer.
+    let short = orphan(world(), "~/work/wt", day(1))
+        .with_command_prefix(
+            "git",
+            &[
+                "--no-optional-locks",
+                "-c",
+                "core.fsmonitor=false",
+                "ls-files",
+            ],
+            CommandOutput::ok("Cargo.toml\0"),
+        )
+        .with_command_prefix(
+            "git",
+            &[
+                "--no-optional-locks",
+                "-c",
+                "core.fsmonitor=false",
+                "hash-object",
+            ],
+            CommandOutput::ok(""),
+        );
     assert_eq!(
-        failure(&out(137, "Killed")),
-        "the check exited with status 137: Killed"
+        check(&short),
+        "git hash-object returned a different number of ids"
     );
 }
 
@@ -478,7 +545,7 @@ fn labels_carry_the_evidence() {
         let c = cands.iter().find(|c| c.id == id).unwrap();
         c.label
             .strip_prefix(&format!(
-                "orphaned worktree of ~/work/monorepo: ~/work/{name} — "
+                "worktree of ~/work/monorepo: ~/work/{name} — forgotten by its repository — "
             ))
             .unwrap()
             .to_string()
@@ -490,12 +557,12 @@ fn labels_carry_the_evidence() {
     );
     assert_eq!(
         label("failed"),
-        "couldn't check for unsaved work: the check failed: \
+        "couldn't check for unsaved work: \
          fatal: could not open 'secret.txt' for reading: Permission denied"
     );
     assert_eq!(
         label("garbled"),
-        "couldn't check for unsaved work: the check printed something unexpected"
+        "couldn't check for unsaved work: the test scripted unreadable evidence"
     );
     assert!(
         label("slow").starts_with("couldn't check for unsaved work: couldn't run the check:"),
@@ -507,15 +574,15 @@ fn labels_carry_the_evidence() {
 #[test]
 fn a_timed_out_check_is_unknown() {
     let fake =
-        orphan(world(), "~/work/big", day(1)).with_command_error("sh", io::ErrorKind::TimedOut);
+        orphan(world(), "~/work/big", day(1)).with_command_error("git", io::ErrorKind::TimedOut);
     let store = Store::open_in_memory().unwrap();
 
-    let (cands, _) = plan(&fake, &mut adapter(""), &store, SCAVENGE);
+    let (cands, _) = plan(&fake, &mut real_adapter(), &store, SCAVENGE);
 
     assert!(
         cands[0]
             .label
-            .contains("couldn't check for unsaved work: couldn't run the check"),
+            .ends_with("couldn't check for unsaved work: git ls-files timed out"),
         "{}",
         cands[0].label
     );
@@ -536,18 +603,18 @@ fn a_vanished_repository_is_unknown_without_running_git() {
         .with_dir("~/notrepo", day(1));
     let store = Store::open_in_memory().unwrap();
 
-    let (cands, _) = plan(&fake, &mut adapter(""), &store, SCAVENGE);
+    let (cands, _) = plan(&fake, &mut real_adapter(), &store, SCAVENGE);
 
     let labels: Vec<&str> = cands.iter().map(|c| c.label.as_str()).collect();
     assert!(labels.contains(
-        &"orphaned worktree of ~/old: ~/work/stray \
-          — couldn't check for unsaved work: its repository ~/old is gone"
+        &"worktree of ~/old: ~/work/stray \
+          — forgotten by its repository — couldn't check for unsaved work: its repository ~/old is gone"
     ));
     assert!(labels.contains(
-        &"orphaned worktree of ~/notrepo: ~/work/fake \
-          — couldn't check for unsaved work: ~/notrepo is not a git repository"
+        &"worktree of ~/notrepo: ~/work/fake \
+          — forgotten by its repository — couldn't check for unsaved work: ~/notrepo is not a git repository"
     ));
-    assert!(checked(&fake).is_empty());
+    assert!(fake.commands_run().is_empty());
 }
 
 // ── confirmation ─────────────────────────────────────────────────────────────
@@ -666,16 +733,29 @@ fn last_used_ignores_build_output_git_and_finder() {
             day(399),
         );
     assert_eq!(
-        last_used(&fake, Path::new("/home/tester/work/wt"), day(400)),
+        last_used(
+            &fake,
+            &Worktree::at(&fake, Path::new("/home/tester/work/wt")).unwrap(),
+            day(400)
+        ),
         day(300)
     );
 
     // With nothing else at the top level, the directory's own mtime.
     let bare = FakePlatform::new()
         .with_dir("~/work/bare", day(42))
-        .with_sized_dir("~/work/bare/target", 9, day(399));
+        .with_sized_dir("~/work/bare/target", 9, day(399))
+        .with_file(
+            "~/work/bare/.git",
+            "gitdir: /gone/.git/worktrees/bare\n",
+            day(399),
+        );
     assert_eq!(
-        last_used(&bare, Path::new("/home/tester/work/bare"), day(400)),
+        last_used(
+            &bare,
+            &Worktree::at(&bare, Path::new("/home/tester/work/bare")).unwrap(),
+            day(400)
+        ),
         day(42)
     );
 }
@@ -830,7 +910,7 @@ fn execute_after_an_unknown_proposal() {
     let out = plan_then_execute(&single(&proposed), &unknown());
     assert_eq!(
         skip_reason(&out),
-        "couldn't re-check it for unsaved work: the check failed: fatal: oops"
+        "couldn't re-check it for unsaved work: fatal: oops"
     );
 }
 
@@ -914,6 +994,7 @@ fn execute_refuses_paths_it_would_never_propose() {
         &store,
         &[
             made_up("/home/tester/work/monorepo/.claude/worktrees/x"),
+            made_up("/home/tester/work/monorepo/.codex/worktrees/y"),
             made_up("/home/tester/work/wt"),
             made_up("relative/path"),
             made_up("/home/tester/.cache/wt"),
@@ -924,6 +1005,7 @@ fn execute_refuses_paths_it_would_never_propose() {
         out.iter().map(skip_reason).collect::<Vec<_>>(),
         [
             "agent-managed: it is under a .claude directory",
+            "agent-managed: it is under a .codex directory",
             "an `exclude` glob covers it",
             "relative/path is not an absolute path",
             "it is in a directory disk-saver never cleans",
@@ -985,7 +1067,7 @@ fn records_why_each_checkout_was_kept_planned_removed_or_skipped() {
     let pair = |kind: &str, reason: &str| (kind.to_string(), reason.to_string());
     assert_eq!(
         why(&decisions, "live"),
-        [pair("kept", "still registered with ~/work/monorepo")]
+        [pair("kept", "idle 0h, under the 1d threshold")]
     );
     assert_eq!(
         why(&decisions, "young"),
@@ -1076,6 +1158,7 @@ fn stale_baselines_expire() {
     let old = Baseline {
         label: "gone".into(),
         recorded_at: unix(day(300)),
+        proposed_as: ProposedAs::Forgotten,
         evidence: Recorded::Clean,
     };
     bucket
@@ -1105,7 +1188,7 @@ fn config_defaults_and_validation() {
     assert_eq!(cfg.max_age, Duration::from_secs(14 * DAY));
     assert_eq!(cfg.min_age, None);
     assert!(cfg.confirm);
-    let built = build(cfg, &ConfigCx::new(NAME)).ok().unwrap();
+    let built = build(cfg, &ConfigCx::new(NAME), canned).ok().unwrap();
     assert_eq!(built.policy.min_age, Duration::from_secs(3 * DAY));
     assert!(factory().build(None).is_ok());
 
@@ -1202,11 +1285,11 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?}");
 }
 
-/// The evidence script against real git: a worktree with a new file, a
+/// The object-store check against real git: a worktree with a new file, a
 /// modified file, ignored, empty and duplicate files, a symlink, a nested
 /// repository and a Git LFS file, whose admin directory is then deleted.
 #[test]
-fn the_script_reports_exactly_the_unsaved_files() {
+fn the_check_reports_exactly_the_unsaved_files() {
     if std::process::Command::new("git")
         .arg("--version")
         .output()
@@ -1259,9 +1342,9 @@ fn the_script_reports_exactly_the_unsaved_files() {
     std::fs::remove_dir_all(repo.join(".git/worktrees/wt")).unwrap();
 
     let p = disk_saver_platform::RealPlatform::new();
-    let link = read_link(&p, &wt).unwrap();
-    assert!(admin_missing(&p, &link));
-    let Evidence::Unsaved { checked, lost } = evidence(&p, &wt, &link) else {
+    let worktree = Worktree::at(&p, &wt).unwrap();
+    assert!(worktree.forgotten);
+    let Status::Checked(Evidence::Unsaved { checked, lost }) = check(&p, &worktree) else {
         panic!("expected Unsaved");
     };
 
@@ -1282,8 +1365,8 @@ fn the_script_reports_exactly_the_unsaved_files() {
 
     // A file name with a newline cannot be checked, so nothing is known.
     write(&wt.join("bad\nname"), "x\n");
-    let Evidence::Unknown { reason } = evidence(&p, &wt, &link) else {
+    let Status::Checked(Evidence::Unknown { reason }) = check(&p, &worktree) else {
         panic!("expected Unknown");
     };
-    assert_eq!(reason, "the check failed: a file name contains a newline");
+    assert_eq!(reason, "a file name contains a newline");
 }

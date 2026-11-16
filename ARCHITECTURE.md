@@ -161,7 +161,7 @@ crates/
   adapter-orbstack/        package: disk-saver-adapter-orbstack        (VM disk-image gap)
   adapter-rustup/          package: disk-saver-adapter-rustup          (on scan: project pins)
   adapter-cachedir-tag/    package: disk-saver-adapter-cachedir-tag    (on scan)
-  adapter-orphaned-worktree/ package: disk-saver-adapter-orphaned-worktree (on scan)
+  adapter-git-worktree/    package: disk-saver-adapter-git-worktree    (on scan and forge)
   adapter-app-temp/        package: disk-saver-adapter-app-temp        (on cachedir helpers)
 ```
 
@@ -178,7 +178,8 @@ Dependency graph (arrows = "depends on"):
 cli ─► every adapter ─► core ─► kv
   │        │              └───► platform
   │        ├─(fs adapters)───► scan ─────► platform
-  │        └─(cache adapters)► cachedir ─► platform
+  │        ├─(cache adapters)► cachedir ─► platform
+  │        └─(git-worktree)──► forge ────► platform
   └─► core, kv, platform
 ```
 
@@ -211,7 +212,7 @@ default = [
     "docker", "node-modules", "rust-target", "python-cache", "trash",
     "pnpm", "cargo-registry", "pip", "git-gc", "git-ignored",
     "nvm", "uv", "npm", "homebrew", "orbstack", "rustup",
-    "cachedir-tag", "orphaned-worktree", "app-temp", "decision-log",
+    "cachedir-tag", "git-worktree", "app-temp", "decision-log",
 ]
 docker       = ["dep:disk-saver-adapter-docker"]
 decision-log = ["disk-saver-core/decision-log"]
@@ -450,6 +451,7 @@ pub trait Platform: Send + Sync {
     fn metadata(&self, path: &Path) -> io::Result<FileMeta>;       // kind, len, mtime, optional atime
     fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>>;
     fn read_to_string(&self, path: &Path) -> io::Result<String>;
+    fn read_link(&self, path: &Path) -> io::Result<PathBuf>;      // default: Unsupported
     /// Recursive apparent size; stays on one device, doesn't follow symlinks.
     fn dir_size(&self, path: &Path) -> io::Result<u64>;
     fn remove_file(&self, path: &Path) -> io::Result<()>;
@@ -476,6 +478,9 @@ pub struct CommandSpec {
     pub program: String,
     pub args: Vec<String>,
     pub timeout: Option<Duration>,    // None → global default (60s)
+    pub dir: Option<PathBuf>,         // None → inherit the working directory
+    pub env: Vec<(String, Option<String>)>,  // in order: Some sets, None removes
+    pub stdin: Option<Vec<u8>>,       // None → empty stdin; written on its own thread
 }
 pub struct CommandOutput { pub status: i32, pub stdout: Vec<u8>, pub stderr: Vec<u8> }
 ```
@@ -849,7 +854,7 @@ usage; five walk `roots` on `disk-saver-scan` looking for a marker (§12.2–12.
 three prune a global cache directory on `disk-saver-cachedir` (§12.6); and trash (§12.5) is
 its own cross-platform case. The ones added since follow the same shapes: the nvm, uv, npm
 and homebrew crates (§12.6) and `app-temp` (§12.11) on `cachedir`'s helpers, `cachedir-tag`
-(§12.10) and `orphaned-worktree` (§12.13) on `scan::find_dirs`, `rustup` (§12.12) on
+(§12.10) and `git-worktree` (§12.13) on `scan::find_dirs`, `rustup` (§12.12) on
 `scan::find_marker_files`, and `orbstack` (§12.9) on subprocesses and KV, like docker. Numbering follows the order they were built, not the order the engine
 runs them — that is by impact class (§8).
 
@@ -1194,37 +1199,67 @@ A toolchain for a foreign host (`x86_64-unknown-linux-gnu` on a Mac — a contai
 use it, but its label says it cannot run on this machine. Labels carry absolute dates, so an
 item's label is stable from run to run.
 
-### 12.13 `orphaned-worktree` — checkouts their repository has forgotten
+### 12.13 `git-worktree` — checkouts nothing else will remove
 
-*The only adapter that inspects content before asking.*
+*The only adapter that inspects content before asking, and the only one that asks a forge.*
 
-A linked worktree's `.git` is a file naming `<repo>/.git/worktrees/<name>`. Once that admin
-directory is pruned, every git command in the checkout fails, nothing ever cleans it up, and
-it often holds a full build. Agents create worktrees constantly — and park them in dot-named
-directories like `.wt-feature` — so these accumulate.
+A linked worktree's `.git` is a file naming `<repo>/.git/worktrees/<name>`. Agents create
+worktrees constantly — one per change, some parked in dot-named directories like
+`.wt-feature` — and nothing removes them: not once the change merges, usually long after
+the session that made it ended, and not once the admin directory is pruned, after which
+every git command in the checkout fails. One sweep of `~/work` found 54 listed worktrees
+holding 78 GB; another found 14 forgotten ones holding 43 GB.
+
+| State | Proposed once idle for | No confirmation, given `confirm = false`, when |
+|---|---|---|
+| forgotten by its repository | `max_age` / `min_age` | every file's content is in git |
+| listed; MR or PR merged | `merged_age` | nothing is uncommitted |
+| listed; MR or PR open | never | — |
+| listed; closed, none, detached HEAD, or no answer | `max_age` / `min_age` | never |
 
 | | |
 |---|---|
-| Discovers | `scan::find_dirs` under `roots`, which offers dot-named directories to the matcher: a `.git` file whose gitdir's parent is `worktrees` and which no longer exists. Submodule gitfiles never match |
-| Never touches | anything under `.claude`, `.codex` or `~/Documents/Codex` (agents manage their own worktrees), a checkout containing a non-empty agent worktree dir, one the repository still lists under another admin dir, one containing a still-registered worktree, anything another adapter claimed |
-| Evidence | when the repository still exists, one `sh` script (paths as positional arguments) counts the non-ignored files whose content is not in its object store; see below |
-| Candidate | the checkout, labelled with its repository and the evidence: `3 files not in git (…)`, `every non-ignored file's content is in git`, or `couldn't check for unsaved work: <reason>` |
-| Executes | re-validates everything, re-runs the evidence, and removes only if every file unsaved now was unsaved, unchanged, when planned |
+| Discovers | `scan::find_dirs` under `roots`, which offers dot-named directories to the matcher: a `.git` file naming a missing admin directory is a forgotten worktree. One naming an existing admin directory names a repository, as does any `*.git` directory holding `worktrees/`, and each repository's `worktrees/*/gitdir` lists its checkouts, including those in dot-directories the walk never enters, such as `<repo>/.claude/worktrees`. Only checkouts under `roots` count; submodule gitfiles never match |
+| Done? | for a listed worktree, the branch's MR or PR, which `disk-saver-forge` asks of the forge's REST API (GitHub's pinned to API version `2022-11-28`, GitLab's v4) for the branch's remote (`branch.<name>.remote`, else `origin`). The calls go through `gh api` / `glab api`, which add the CLI's existing login: disk-saver holds no token and depends on no CLI output format. Hosts named `github.*`/`gitlab.*` (and the two `.com`s) need no config; `forges` maps any other. Git alone cannot tell: a squash merge leaves no trace of the branch, and a merge-tree test recognised 10 of the sweep's 43 merged branches |
+| Check | `doctor` runs one lookup per forge host the listed worktrees use, and reports a missing CLI, a lapsed login, an unknown host or an answer it cannot read. A failed lookup during a run is logged once per reason; the worktree then waits for `max_age` and asks |
+| Activity | the newest of the checkout's top-level entries and, for a listed worktree, its admin `HEAD` and `index`; never the reflog, which `git gc` rewrites |
+| Never touches | anything under `.codex` or `~/Documents/Codex`; anything under `.claude` unless its branch merged; a locked worktree; a checkout inside another repository's work tree (a vendored import); a checkout holding a non-empty agent worktree dir or another worktree of its own repository; a forgotten checkout the repository still lists under another admin dir (`git worktree repair` can relink it); anything another adapter claimed |
+| Evidence | a few git commands per state, run from Rust through `run_command`; see below |
+| Embedded | checkouts of other repositories inside it (a vendored import, usually ignored by the outer repository) go with it: each gets the status check, reported under its path, and its admin directory is removed too |
+| Candidate | the checkout, labelled with its repository, state and evidence: `… on feat — MR !7 merged — nothing uncommitted`, `… — forgotten by its repository — 3 files not in git (…)` |
+| Executes | re-validates everything, including that it is still in the state it was proposed in, re-runs the evidence, and removes only if every path unsaved now was unsaved, unchanged, when planned. Then the checkout and, for a listed one, its admin directory, as `git worktree remove` would. The branch stays |
 | Class | **UserData** |
-| Confirmation | forced unless `confirm = false` *and* the evidence came back clean |
-| Defaults | `roots = ["~"]`, `max_age = "14d"`, `min_age = "3d"`, `confirm = true` |
+| Defaults | `roots = ["~"]`, `merged_age = "1d"`, `max_age = "14d"`, `min_age = "3d"`, `confirm = true` |
 
-The evidence script lists files with an empty index (a nonexistent `GIT_INDEX_FILE`), so every
-non-ignored file counts as untracked, and hashes their raw bytes against the object store. It
-re-checks only the misses through git's filters, and computes Git LFS pointers itself: running
+Every git command runs in the checkout with `--no-optional-locks`, fsmonitor off, and the
+variables a git hook exports removed, so it reads that checkout's repository and nothing else.
+
+A listed worktree's evidence is `git status --porcelain -z --no-renames`, each path
+fingerprinted by raw blob id (`hash-object --no-filters --stdin-paths`; a symlink by its
+target's, a deletion by the null id) so execute can see one that changed. Without optional
+locks the index is never rewritten: a rewritten index would read as activity and void the
+proposal. `git diff` is unusable here, because it rewrites the index whenever a file's stat
+changed but its content did not, whatever the flag says. A detached HEAD that no branch,
+remote branch or tag contains (`for-each-ref --contains=HEAD`) keeps the worktree.
+
+A forgotten worktree has no index and no `HEAD`, so its check asks instead whether each file's
+content is in the object store. It lists files with an empty index (a nonexistent
+`GIT_INDEX_FILE`), so every non-ignored file counts as untracked, hashes their raw bytes and
+looks them up (`cat-file --batch-check`). It re-checks only the misses through git's filters,
+and computes Git LFS pointers itself (`sha256sum` or `shasum -a 256` for the digest): running
 the LFS clean filter would copy every matching file into `.git/lfs/objects`, which is not a
-side effect a janitor can have under disk pressure. Every step writes to a temp file and checks
-its status, so a full disk cannot truncate a list into a false "clean". About 15 s for a
-35,000-file monorepo checkout, so it runs only for checkouts already past the age policy.
+side effect a janitor can have under disk pressure. About 15 s for a 35,000-file monorepo
+checkout, so it runs only for checkouts already past the age policy.
 
-Ignored files are not checked (a unique `.env` goes with the checkout), and "in the object
-store" is not "reachable": a blob only ever staged can still be garbage-collected later. The
-approval prompt is where a human weighs that; the label gives them what they need.
+Both checks fail closed: any failing step, a path that cannot travel through `--stdin-paths`
+(not UTF-8, or holding a newline), or an answer that does not line up with what was asked
+makes the result unknown, since a short list would read as a false "clean". The policy tests
+swap in canned evidence through a `Check` function; the checks themselves are tested against
+`FakePlatform` for their failures and against real git for what they report. Ignored files
+are not checked (a unique `.env` goes with
+the checkout), and "in the object store" is not "reachable": a blob only ever staged can still
+be garbage-collected later. The approval prompt is where a human weighs that; the label gives
+them what they need.
 
 ---
 

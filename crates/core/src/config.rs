@@ -569,11 +569,13 @@ min_age       = "1d"
 confirm       = false
 skip_creators = ["uv"]       # caches another adapter maintains through its tool
 
-[adapters.orphaned-worktree]
-roots   = ["~/dev"]     # git worktree checkouts whose repository no longer lists them
-max_age = "14d"
-min_age = "3d"
-confirm = true          # labels say whether any file's content is missing from git
+[adapters.git-worktree]
+roots      = ["~/dev"]  # where to look for worktrees; checkouts outside these are left alone
+merged_age = "1d"       # idle time once its MR or PR merged (asked with `glab` or `gh`)
+max_age    = "14d"      # idle time for a forgotten or unmerged worktree
+min_age    = "3d"
+confirm    = true       # false: remove forgotten or merged worktrees with nothing unsaved without asking
+# forges   = { "code.example.org" = "gitlab" }  # hosts not named github.* or gitlab.*
 
 [adapters.git-ignored]
 roots   = ["~/dev"]     # remove git-ignored objects (build dirs, logs, …)

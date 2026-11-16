@@ -45,8 +45,8 @@ pub fn registry() -> Vec<AdapterFactory> {
         disk_saver_adapter_homebrew::factory(),
         #[cfg(feature = "cachedir-tag")]
         disk_saver_adapter_cachedir_tag::factory(),
-        #[cfg(feature = "orphaned-worktree")]
-        disk_saver_adapter_orphaned_worktree::factory(),
+        #[cfg(feature = "git-worktree")]
+        disk_saver_adapter_git_worktree::factory(),
         #[cfg(feature = "git-ignored")]
         disk_saver_adapter_git_ignored::factory(),
         #[cfg(feature = "app-temp")]
@@ -71,7 +71,7 @@ mod tests {
             "node-modules",
             "rust-target",
             "python-cache",
-            "orphaned-worktree",
+            "git-worktree",
         ] {
             if let Some(i) = at(owner) {
                 assert!(i < git_ignored, "{owner} must plan before git-ignored");
