@@ -651,6 +651,22 @@ impl Platform for FakePlatform {
         }
     }
 
+    fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
+        let st = self.lock();
+        let p = normalize(path, &st.home);
+        match st.nodes.get(&p) {
+            None => Err(not_found(&p)),
+            Some(FakeNode {
+                kind: NodeKind::Symlink { target },
+                ..
+            }) => Ok(target.clone()),
+            Some(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("fake: not a symlink: {}", p.display()),
+            )),
+        }
+    }
+
     fn read_to_string(&self, path: &Path) -> io::Result<String> {
         let st = self.lock();
         let p = normalize(path, &st.home);

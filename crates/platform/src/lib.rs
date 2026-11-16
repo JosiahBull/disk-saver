@@ -100,6 +100,15 @@ pub trait Platform: Send + Sync {
     /// Read a file's entire contents into a UTF-8 string.
     fn read_to_string(&self, path: &Path) -> std::io::Result<String>;
 
+    /// The target the symbolic link at `path` names, without following it.
+    /// Defaults to `Unsupported`, for platforms that never need it.
+    fn read_link(&self, path: &Path) -> std::io::Result<PathBuf> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!("read_link is not supported here: {}", path.display()),
+        ))
+    }
+
     /// Recursive *apparent* size of `path` in bytes. Stays on the starting
     /// device and never follows symlinks.
     fn dir_size(&self, path: &Path) -> std::io::Result<u64>;

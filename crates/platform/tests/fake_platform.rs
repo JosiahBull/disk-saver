@@ -105,6 +105,19 @@ fn metadata_missing_is_not_found() {
 }
 
 #[test]
+fn read_link_returns_a_symlinks_target_and_refuses_anything_else() {
+    let p = FakePlatform::new()
+        .with_symlink("/proj/link", "/elsewhere", t(1))
+        .with_file("/proj/file", b"x".to_vec(), t(1));
+    assert_eq!(
+        p.read_link(Path::new("/proj/link")).unwrap(),
+        PathBuf::from("/elsewhere")
+    );
+    assert!(p.read_link(Path::new("/proj/file")).is_err());
+    assert!(p.read_link(Path::new("/proj/missing")).is_err());
+}
+
+#[test]
 fn read_dir_lists_children_sorted_with_kinds() {
     let p = FakePlatform::new()
         .with_file("/proj/package.json", b"{}".to_vec(), t(1))
