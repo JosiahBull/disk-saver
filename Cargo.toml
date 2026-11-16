@@ -24,6 +24,7 @@ disk-saver-kv = { path = "crates/kv", version = "0.4.0" }
 disk-saver-platform = { path = "crates/platform", version = "0.4.0" }
 disk-saver-scan = { path = "crates/scan", version = "0.4.0" }
 disk-saver-cachedir = { path = "crates/cachedir", version = "0.4.0" }
+disk-saver-forge = { path = "crates/forge", version = "0.4.0" }
 disk-saver-adapter-docker = { path = "crates/adapter-docker", version = "0.4.0" }
 disk-saver-adapter-pnpm = { path = "crates/adapter-pnpm", version = "0.4.0" }
 disk-saver-adapter-cargo-registry = { path = "crates/adapter-cargo-registry", version = "0.4.0" }

@@ -142,6 +142,7 @@ crates/
   kv/                      package: disk-saver-kv         sqlite key-value store
   scan/                    package: disk-saver-scan       shared project/artifact-dir walker
   cachedir/                package: disk-saver-cachedir   shared global-cache-dir engine
+  forge/                   package: disk-saver-forge      asks GitHub or GitLab whether a branch merged
   installer/               package: disk-saver-installer   standalone interactive TUI installer
   adapter-docker/          package: disk-saver-adapter-docker
   adapter-node-modules/    package: disk-saver-adapter-node-modules
@@ -194,6 +195,9 @@ cli ─► every adapter ─► core ─► kv
   could not look.
 - `cachedir` holds the whole lifecycle for a global cache directory — config, age, size,
   eligibility, deletion, decision records — so a cache adapter is a name and a resolver.
+- `forge` asks GitHub's or GitLab's REST API, through `gh api` or `glab api`, whether a
+  branch's pull or merge request merged. Git alone cannot tell once a squash merge leaves
+  the branch's commits off the target branch.
 - `cli` is thin: argument parsing, logging setup, config loading, the static adapter
   registry, the interactive `review` flow, and scheduling install/uninstall.
 

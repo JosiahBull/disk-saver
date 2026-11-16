@@ -785,6 +785,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "disk-saver-forge"
+version = "0.4.0"
+dependencies = [
+ "disk-saver-platform",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "disk-saver-installer"
 version = "0.4.0"
 dependencies = [

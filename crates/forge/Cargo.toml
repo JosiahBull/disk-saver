@@ -1,0 +1,19 @@
+[package]
+name = "disk-saver-forge"
+description = "Asks GitHub or GitLab whether a branch's pull or merge request merged, through the gh and glab CLIs."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+disk-saver-platform.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+disk-saver-platform = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true
