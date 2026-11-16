@@ -200,3 +200,73 @@ fn never_proposes_finder_metadata_or_claude_code_state_even_with_custom_protect(
     assert!(matches!(&out[0], Outcome::Skipped { .. }));
     assert!(fake.exists("~/dev/proj/.claude/worktrees"));
 }
+
+/// `git clean -Xdn` output for a repo whose `campaigns/` directory is ignored.
+const CLEAN_CAMPAIGNS: &str = "Would remove campaigns/ac-vag-rerun/\n\
+    Would remove campaigns/other/out.json\n\
+    Would remove debug.log\n";
+
+#[test]
+fn path_globs_protect_everything_under_a_matching_directory() {
+    let fake = FakePlatform::new()
+        .with_now(t(400))
+        .with_command(
+            "git",
+            &["--version"],
+            CommandOutput::ok("git version 2.44.0"),
+        )
+        .with_command_prefix("git", &["-C"], CommandOutput::ok(CLEAN_CAMPAIGNS))
+        .with_file("~/dev/proj/.git/HEAD", b"ref".to_vec(), t(300))
+        .with_sized_dir("~/dev/proj/campaigns/ac-vag-rerun", 9_000_000, t(300))
+        .with_file(
+            "~/dev/proj/campaigns/other/out.json",
+            vec![0u8; 512],
+            t(300),
+        )
+        .with_file("~/dev/proj/debug.log", vec![0u8; 1024], t(300));
+
+    for glob in [
+        "~/dev/proj/campaigns",
+        "**/proj/campaigns",
+        "proj/campaigns",
+    ] {
+        let cfg = toml::from_str(&format!(
+            "roots = [\"~/dev\"]\nprotect = [\"*env*\", \"{glob}\"]"
+        ))
+        .unwrap();
+        let mut a = factory().build(Some(cfg)).unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let log = DecisionLog::disabled();
+        let mut ctx = Ctx::new(
+            &fake,
+            store.bucket(a.name()),
+            Pressure::Scavenge { need: 1 },
+            &log,
+        );
+
+        let plan = a.plan(&mut ctx).unwrap();
+        let ids: Vec<&str> = plan.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids.len(), 1, "{glob}: got {ids:?}");
+        assert!(ids[0].ends_with("debug.log"), "{glob}: got {ids:?}");
+
+        // A queued approval under the protected directory is still refused.
+        let queued = Candidate::new(
+            fake.home_dir()
+                .join("dev/proj/campaigns/ac-vag-rerun")
+                .to_string_lossy()
+                .into_owned(),
+            "campaign",
+            9_000_000,
+            t(300),
+            Class::UserData,
+        );
+        let out = a.execute(&mut ctx, &[queued]).unwrap();
+        assert!(matches!(&out[0], Outcome::Skipped { .. }), "{glob}");
+    }
+}
+
+#[test]
+fn invalid_path_glob_fails_config() {
+    let cfg = toml::from_str("protect = [\"~/dev/[unterminated\"]").unwrap();
+    assert!(factory().build(Some(cfg)).is_err());
+}
