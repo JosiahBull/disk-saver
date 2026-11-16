@@ -581,6 +581,8 @@ max_age = "30d"
 min_age = "7d"
 confirm = true          # UserData: queues for `disk-saver review`, never auto-deletes
 protect = ["*env*"]     # never touch entries whose name matches these (e.g. .env, venv)
+# protect = ["*env*", "repo/data"]  # a glob with a / matches a path and everything under it
+# protect = ["*env*", "~/dev/repo/data"]  # a glob with a / matches a path and everything under it
 
 [adapters.app-temp]
 max_age = "30d"         # old items in ~/Library/Containers/<app>/Data/tmp (macOS)

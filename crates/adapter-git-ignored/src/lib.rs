@@ -12,7 +12,11 @@
 //! `confirm = true`: like the trash adapter, nothing is deleted automatically —
 //! candidates queue for `disk-saver review`. By default any entry whose name
 //! matches `*env*` (`.env`, `venv`, `env/`, …) is never proposed; adjust with the
-//! `protect` glob list. Requires `git` on `PATH` (else `Unavailable`).
+//! `protect` glob list. A `protect` glob without a `/` matches an entry's name; one
+//! with a `/` matches its absolute path or any ancestor's (a leading `~` is the
+//! home directory; a relative glob matches at any depth), so `~/work/repo/data`
+//! or `repo/data` protects everything under that directory.
+//! Requires `git` on `PATH` (else `Unavailable`).
 //!
 //! Two kinds of entry are never proposed, whatever the config says:
 //!
@@ -33,7 +37,7 @@ use disk_saver_core::{
     Ctx, Decision, DecisionKind, DecisionLog, FileKind, Outcome, Platform, RetentionPolicy,
 };
 use disk_saver_scan::{FsConfig, Rule, find_artifacts};
-use globset::GlobSet;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
 
 /// The adapter's stable name (config section, KV bucket, log target).
@@ -80,7 +84,10 @@ struct IgnoredConfig {
     /// Route to the approvals queue rather than auto-delete. Defaults to `true`
     /// (this is `UserData`).
     confirm: bool,
-    /// Globs matched against an entry's *name*; matches are never proposed.
+    /// Globs for entries that are never proposed. Without a `/` a glob matches
+    /// the entry's *name*; with one it matches the absolute path of the entry or
+    /// any ancestor, after expanding a leading `~`; a relative one matches at
+    /// any depth.
     /// Defaults to `["*env*"]` so `.env`, `venv`, `env/`, … are always protected.
     protect: Vec<String>,
 }
@@ -121,10 +128,19 @@ pub fn factory() -> AdapterFactory {
 /// Validate the retention thresholds and compile the `protect` globs; either
 /// failing yields [`ConfigError::Adapter`].
 fn build(cfg: IgnoredConfig, cx: &ConfigCx) -> Result<GitIgnoredAdapter, ConfigError> {
+    let (path_globs, name_globs): (Vec<String>, Vec<String>) =
+        cfg.protect.iter().cloned().partition(|g| g.contains('/'));
+    // Path globs are compiled per run once the home directory is known; compile
+    // them here too so a bad pattern fails `config check`.
+    cx.globs("protect", &path_globs)?;
     Ok(GitIgnoredAdapter {
         policy: cx.retention(cfg.max_age, cfg.min_age)?,
         confirm: cfg.confirm,
-        protect: cx.globs("protect", &cfg.protect)?,
+        protect: Protect {
+            names: cx.globs("protect", &name_globs)?,
+            path_globs,
+            paths: None,
+        },
         cfg,
     })
 }
@@ -132,8 +148,44 @@ fn build(cfg: IgnoredConfig, cx: &ConfigCx) -> Result<GitIgnoredAdapter, ConfigE
 struct GitIgnoredAdapter {
     policy: RetentionPolicy,
     confirm: bool,
-    protect: GlobSet,
+    protect: Protect,
     cfg: IgnoredConfig,
+}
+
+/// The compiled `protect` list: name globs, and path globs whose `~` needs the
+/// platform's home directory before they can be compiled.
+struct Protect {
+    names: GlobSet,
+    path_globs: Vec<String>,
+    paths: Option<GlobSet>,
+}
+
+impl Protect {
+    /// Compile the path globs against `home`, once per adapter.
+    fn resolve(&mut self, home: &Path) -> Result<(), AdapterError> {
+        if self.paths.is_some() {
+            return Ok(());
+        }
+        let home = globset::escape(&home.to_string_lossy());
+        let mut builder = GlobSetBuilder::new();
+        for pattern in &self.path_globs {
+            let expanded = match pattern.strip_prefix('~') {
+                Some(rest) if rest.starts_with('/') => format!("{home}{rest}"),
+                _ if pattern.starts_with('/') => pattern.clone(),
+                // Relative: match at any depth, like a `.gitignore` path.
+                _ => format!("**/{pattern}"),
+            };
+            let glob = Glob::new(&expanded).map_err(|e| {
+                AdapterError::Failed(anyhow::anyhow!("invalid protect glob '{pattern}': {e}"))
+            })?;
+            builder.add(glob);
+        }
+        let set = builder
+            .build()
+            .map_err(|e| AdapterError::Failed(anyhow::anyhow!("compiling protect globs: {e}")))?;
+        self.paths = Some(set);
+        Ok(())
+    }
 }
 
 /// Probe that `git` is runnable. Missing binary or non-zero exit ⇒ `Unavailable`.
@@ -179,15 +231,20 @@ fn ignored_objects(platform: &dyn Platform, repo: &Path) -> Vec<PathBuf> {
 }
 
 /// True if `path` must never be proposed or removed: any component is an
-/// [`ALWAYS_SKIPPED`] name, or its final component matches a `protect` glob.
-fn is_protected(protect: &GlobSet, path: &Path) -> bool {
+/// [`ALWAYS_SKIPPED`] name, its final component matches a name glob, or it or
+/// an ancestor matches a path glob. [`Protect::resolve`] must have run.
+fn is_protected(protect: &Protect, path: &Path) -> bool {
     let always = path
         .components()
         .any(|c| ALWAYS_SKIPPED.iter().any(|name| c.as_os_str() == *name));
     always
         || path
             .file_name()
-            .is_some_and(|name| protect.is_match(Path::new(name)))
+            .is_some_and(|name| protect.names.is_match(Path::new(name)))
+        || protect
+            .paths
+            .as_ref()
+            .is_some_and(|set| !set.is_empty() && path.ancestors().any(|a| set.is_match(a)))
 }
 
 impl Adapter for GitIgnoredAdapter {
@@ -205,6 +262,7 @@ impl Adapter for GitIgnoredAdapter {
 
     fn plan(&mut self, ctx: &mut Ctx) -> Result<Vec<Candidate>, AdapterError> {
         let now = ctx.now();
+        self.protect.resolve(&ctx.platform.home_dir())?;
         let (roots, opts) =
             self.cfg.as_fs().resolve_walk(ctx.platform).map_err(|e| {
                 AdapterError::Failed(anyhow::anyhow!("compiling exclude globs: {e}"))
@@ -269,6 +327,7 @@ impl Adapter for GitIgnoredAdapter {
         ctx: &mut Ctx,
         batch: &[Candidate],
     ) -> Result<Vec<Outcome>, AdapterError> {
+        self.protect.resolve(&ctx.platform.home_dir())?;
         let mut outcomes = Vec::with_capacity(batch.len());
         for c in batch {
             let path = PathBuf::from(&c.id);
