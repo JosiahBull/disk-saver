@@ -178,7 +178,7 @@ registry, so leaves go first.
 # appear in the index before the next one can resolve it:
 #   disk-saver-kv, disk-saver-platform      (no internal dependencies)
 #   disk-saver-core                         (kv, platform)
-#   disk-saver-scan, disk-saver-cachedir
+#   disk-saver-scan, disk-saver-cachedir, disk-saver-forge
 #   disk-saver-adapter-*                    (all fourteen)
 #   disk-saver, disk-saver-installer        (last)
 cargo publish -p disk-saver-kv
