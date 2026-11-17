@@ -93,8 +93,8 @@ pub const ADAPTERS: &[AdapterInfo] = &[
         takes_roots: false,
     },
     AdapterInfo {
-        name: "orphaned-worktree",
-        desc: "git worktrees their repository has forgotten — asks first",
+        name: "git-worktree",
+        desc: "git worktrees whose branch merged or whose repository forgot them — asks first",
         takes_roots: true,
     },
     AdapterInfo {

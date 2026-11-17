@@ -9,7 +9,7 @@
 //! this crate branches on `target_os`.
 
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -95,6 +95,11 @@ pub(crate) fn read_dir(path: &Path) -> io::Result<Vec<DirEntry>> {
 /// Read a file's entire contents into a UTF-8 string.
 pub(crate) fn read_to_string(path: &Path) -> io::Result<String> {
     fs::read_to_string(path)
+}
+
+/// The target a symbolic link at `path` names, without following it.
+pub(crate) fn read_link(path: &Path) -> io::Result<PathBuf> {
+    fs::read_link(path)
 }
 
 /// Recursively sum apparent file sizes under `path`, staying on device `dev`
@@ -214,12 +219,36 @@ pub(crate) fn disk_usage(path: &Path) -> io::Result<DiskUsage> {
 pub(crate) fn run_command(cmd: &CommandSpec) -> io::Result<CommandOutput> {
     let timeout = cmd.timeout.unwrap_or(DEFAULT_COMMAND_TIMEOUT);
 
-    let mut child = Command::new(&cmd.program)
+    let mut command = Command::new(&cmd.program);
+    command
         .args(&cmd.args)
-        .stdin(Stdio::null())
+        .stdin(if cmd.stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    if let Some(dir) = &cmd.dir {
+        command.current_dir(dir);
+    }
+    for (name, value) in &cmd.env {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
+    let mut child = command.spawn()?;
+
+    // Feed stdin from its own thread, so a child that writes before it has
+    // read everything cannot deadlock against us. A child that exits without
+    // reading it all closes the pipe, and the write error is moot.
+    let stdin_writer = cmd.stdin.clone().map(|bytes| {
+        let mut pipe = child.stdin.take().expect("stdin was piped");
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(&bytes);
+        })
+    });
 
     // Drain both pipes on dedicated threads so a chatty child cannot deadlock
     // against a full pipe buffer while we poll for exit.
@@ -248,6 +277,9 @@ pub(crate) fn run_command(cmd: &CommandSpec) -> io::Result<CommandOutput> {
                     let _ = child.wait();
                     let _ = out_reader.join();
                     let _ = err_reader.join();
+                    if let Some(writer) = stdin_writer {
+                        let _ = writer.join();
+                    }
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
                         format!(
@@ -263,6 +295,9 @@ pub(crate) fn run_command(cmd: &CommandSpec) -> io::Result<CommandOutput> {
 
     let stdout = out_reader.join().unwrap_or_default();
     let stderr = err_reader.join().unwrap_or_default();
+    if let Some(writer) = stdin_writer {
+        let _ = writer.join();
+    }
 
     Ok(CommandOutput {
         status: exit_code(&status),
@@ -504,6 +539,48 @@ mod tests {
         let out = run_command(&CommandSpec::new("sh", ["-c", "printf ok"])).unwrap();
         assert!(out.success());
         assert_eq!(out.stdout_string(), "ok");
+    }
+
+    #[test]
+    fn run_command_applies_dir_env_and_stdin() {
+        let dir = tmp();
+        let canonical = fs::canonicalize(dir.path()).unwrap();
+        let spec = CommandSpec::new(
+            "sh",
+            [
+                "-c",
+                "printf '%s|%s|%s|' \"$PWD\" \"$DS_SET\" \"${HOME-unset}\"; cat",
+            ],
+        )
+        .in_dir(&canonical)
+        .env("DS_SET", "yes")
+        .env_remove("HOME")
+        .with_stdin("piped in");
+        let out = run_command(&spec).unwrap();
+        assert!(out.success(), "{}", out.stderr_string());
+        assert_eq!(
+            out.stdout_string(),
+            format!("{}|yes|unset|piped in", canonical.display())
+        );
+    }
+
+    #[test]
+    fn run_command_feeds_large_stdin_while_draining_output() {
+        // More than a pipe buffer each way: written and read concurrently,
+        // or this would deadlock.
+        let input = "x".repeat(1 << 20);
+        let spec = CommandSpec::new("cat", Vec::<String>::new()).with_stdin(input.clone());
+        let out = run_command(&spec).unwrap();
+        assert_eq!(out.stdout.len(), input.len());
+    }
+
+    #[test]
+    fn read_link_returns_the_target_unfollowed() {
+        let dir = tmp();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink("nowhere/at-all", &link).unwrap();
+        assert_eq!(read_link(&link).unwrap(), PathBuf::from("nowhere/at-all"));
+        assert!(read_link(dir.path()).is_err());
     }
 
     #[test]

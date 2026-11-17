@@ -92,6 +92,10 @@ impl Platform for LinuxPlatform {
         sys::read_to_string(path)
     }
 
+    fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
+        sys::read_link(path)
+    }
+
     fn dir_size(&self, path: &Path) -> io::Result<u64> {
         sys::dir_size(path)
     }

@@ -1,6 +1,6 @@
 [package]
-name = "disk-saver-adapter-orphaned-worktree"
-description = "disk-saver adapter for git worktrees whose repository no longer knows them."
+name = "disk-saver-adapter-git-worktree"
+description = "disk-saver adapter for git worktrees nothing else will remove: forgotten by their repository, or their branch merged."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 disk-saver-core.workspace = true
+disk-saver-forge.workspace = true
 disk-saver-scan.workspace = true
 serde.workspace = true
 anyhow.workspace = true

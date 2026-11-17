@@ -91,6 +91,13 @@ pub struct CommandSpec {
     pub args: Vec<String>,
     /// Hard timeout; `None` defers to the caller/global default (60s).
     pub timeout: Option<Duration>,
+    /// Working directory; `None` inherits this process's.
+    pub dir: Option<PathBuf>,
+    /// Environment changes, applied in order: `Some(value)` sets a variable,
+    /// `None` removes it. Everything else is inherited.
+    pub env: Vec<(String, Option<String>)>,
+    /// Bytes written to the child's stdin, which is otherwise empty.
+    pub stdin: Option<Vec<u8>>,
 }
 
 impl CommandSpec {
@@ -104,7 +111,38 @@ impl CommandSpec {
             program: program.into(),
             args: args.into_iter().map(Into::into).collect(),
             timeout: None,
+            dir: None,
+            env: Vec::new(),
+            stdin: None,
         }
+    }
+
+    /// Run in `dir`, consuming and returning `self`.
+    #[must_use]
+    pub fn in_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.dir = Some(dir.into());
+        self
+    }
+
+    /// Set the environment variable `name` to `value` for this command.
+    #[must_use]
+    pub fn env(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.push((name.into(), Some(value.into())));
+        self
+    }
+
+    /// Remove the environment variable `name` for this command.
+    #[must_use]
+    pub fn env_remove(mut self, name: impl Into<String>) -> Self {
+        self.env.push((name.into(), None));
+        self
+    }
+
+    /// Feed `bytes` to the command's stdin.
+    #[must_use]
+    pub fn with_stdin(mut self, bytes: impl Into<Vec<u8>>) -> Self {
+        self.stdin = Some(bytes.into());
+        self
     }
 
     /// Set a hard timeout for this command, consuming and returning `self`.

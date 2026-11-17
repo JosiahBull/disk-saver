@@ -71,7 +71,7 @@ disk-saver-adapter-homebrew = { workspace = true, optional = true }
 disk-saver-adapter-orbstack = { workspace = true, optional = true }
 disk-saver-adapter-rustup = { workspace = true, optional = true }
 disk-saver-adapter-cachedir-tag = { workspace = true, optional = true }
-disk-saver-adapter-orphaned-worktree = { workspace = true, optional = true }
+disk-saver-adapter-git-worktree = { workspace = true, optional = true }
 disk-saver-adapter-app-temp = { workspace = true, optional = true }
 
 clap.workspace = true
@@ -105,7 +105,7 @@ default = [
     "orbstack",
     "rustup",
     "cachedir-tag",
-    "orphaned-worktree",
+    "git-worktree",
     "app-temp",
     "decision-log",
 ]
@@ -126,7 +126,7 @@ homebrew = ["dep:disk-saver-adapter-homebrew"]
 orbstack = ["dep:disk-saver-adapter-orbstack"]
 rustup = ["dep:disk-saver-adapter-rustup"]
 cachedir-tag = ["dep:disk-saver-adapter-cachedir-tag"]
-orphaned-worktree = ["dep:disk-saver-adapter-orphaned-worktree"]
+git-worktree = ["dep:disk-saver-adapter-git-worktree"]
 app-temp = ["dep:disk-saver-adapter-app-temp"]
 decision-log = ["disk-saver-core/decision-log"]
 
